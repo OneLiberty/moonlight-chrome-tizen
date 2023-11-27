@@ -41,7 +41,7 @@ Also, you should run "Docker Desktop" before proceeding further and it is also r
  	> Note: Just to clarify "Device ID" will be the last column, something like `UE55AU7172UXXH`.
 	- Next, enter the following command to install the package:
 	 ```
-	 tizen install -n Moonlight.wgt -t YOUR_DEVICE_ID
+	 tizen install -n MoonlightWasm.wgt -t YOUR_DEVICE_ID
 	 ```
  	> Note: Replace `YOUR_DEVICE_ID` with `Device ID` of your TV.
  	- After that, Moonlight should now appear in your `Recent Apps` or similar page on your "Samsung Smart TV".
