@@ -195,7 +195,7 @@ main {
 }
 #host-grid .mdl-card:hover, #host-grid .mdl-card:focus, #host-grid .mdl-card:active, #game-grid .mdl-card:focus, #game-grid .mdl-card:active {
     transform: scale(1.1);
-    outline-color: #00A3C6;
+    outline: #00A3C6 2px;
 }
 #host-grid .mdl-card__title {
     padding: 0;
@@ -246,7 +246,7 @@ main {
 .mdl-card.hovered {
     background-color: initial;
     transform: scale(1.1);
-    outline-color: #00A3C6;
+    outline: #00A3C6 2px;
 }
 .hovered {
     background-color: rgba(158,158,158,.2);
@@ -312,10 +312,10 @@ main {
     border: none !important;
 }
 .current-game {
-    outline: auto #8BC34A;
+    outline: #8BC34A 2px;
 }
 .host-cell-inactive {
-    outline: auto #F44336;
+    outline: #F44336 2px;
 }
 .host-cell:hover {
     cursor: pointer;
