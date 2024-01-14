@@ -61,7 +61,7 @@ public:
   MessageResult StartStream(std::string host, std::string width,
   std::string height, std::string fps, std::string bitrate, std::string rikey,
   std::string rikeyid, std::string appversion, std::string gfeversion, bool framePacing,
-  bool audioSync, bool hdrEnabled);
+  bool audioSync, std::string rtspurl, bool hdrEnabled);
   MessageResult StopStream();
 
   void STUN(int callbackId);
@@ -186,6 +186,7 @@ public:
   std::string m_Host;
   std::string m_AppVersion;
   std::string m_GfeVersion;
+  std::string m_RtspUrl;
   bool m_FramePacingEnabled;
   bool m_AudioSyncEnabled;
   bool m_HdrEnabled;
@@ -194,8 +195,6 @@ public:
 
   pthread_t m_ConnectionThread;
   pthread_t m_InputThread;
-
-  bool m_RequestIdrFrame;
 
   OpusMSDecoder* m_OpusDecoder;
 
@@ -243,7 +242,7 @@ void openUrl(int callbackId, std::string url, emscripten::val ppk, bool binaryRe
 
 MessageResult startStream(std::string host, std::string width, std::string height, std::string fps,
 std::string bitrate, std::string rikey, std::string rikeyid, std::string appversion,
-std::string gfeversion, bool framePacing, bool audioSync, bool hdrEnabled);
+std::string gfeversion, bool framePacing, bool audioSync,  std::string rtspurl, bool hdrEnabled);
 MessageResult stopStream();
 
 void stun(int callbackId);
