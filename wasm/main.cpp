@@ -146,6 +146,7 @@ void* MoonlightInstance::ConnectionThreadFunc(void* context) {
   serverInfo.address = me->m_Host.c_str();
   serverInfo.serverInfoAppVersion = me->m_AppVersion.c_str();
   serverInfo.serverInfoGfeVersion = me->m_GfeVersion.c_str();
+  serverInfo.serverCodecModeSupport = SCM_HEVC_MAIN10; //FHEN 
 
   err = LiStartConnection(&serverInfo, &me->m_StreamConfig,
   &MoonlightInstance::s_ClCallbacks, &MoonlightInstance::s_DrCallbacks,
@@ -201,6 +202,7 @@ bool audioSync, bool hdrEnabled) {
   m_StreamConfig.packetSize = 1392;
   m_StreamConfig.supportsHevc = true;
   m_StreamConfig.enableHdr = hdrEnabled;
+  m_StreamConfig.supportedVideoFormats = VIDEO_FORMAT_H265_MAIN10; //FHEN devrait être 264
 
   // Load the rikey and rikeyid into the stream configuration
   HexStringToBytes(rikey.c_str(), m_StreamConfig.remoteInputAesKey);
