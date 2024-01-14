@@ -104,8 +104,8 @@ void MoonlightInstance::VideoTrackListener::OnTrackOpen() {
   ClLogMessage("VIDEO ElementaryMediaTrack::OnTrackOpen\n");
   std::unique_lock<std::mutex> lock(m_Instance->m_Mutex);
   m_Instance->m_VideoStarted = true;
-  m_Instance->m_RequestIdrFrame = true;
   m_Instance->m_EmssVideoStateChanged.notify_all();
+  LiRequestIdrFrame();
 }
 
 void MoonlightInstance::VideoTrackListener::OnTrackClosed(
@@ -126,7 +126,7 @@ void MoonlightInstance::DidChangeFocus(bool got_focus) {
   // Request an IDR frame to dump the frame queue that may have
   // built up from the GL pipeline being stalled.
   if (got_focus) {
-    g_Instance->m_RequestIdrFrame = true;
+  LiRequestIdrFrame();
   }
 }
 
@@ -250,12 +250,6 @@ int MoonlightInstance::VidDecSubmitDecodeUnit(PDECODE_UNIT decodeUnit) {
   unsigned int offset;
   unsigned int totalLength;
   // ClLogMessage("Video packet append at: %f\n", s_pktPts);
-
-  // Request an IDR frame if needed
-  if (g_Instance->m_RequestIdrFrame) {
-    g_Instance->m_RequestIdrFrame = false;
-    return DR_NEED_IDR;
-  }
 
   totalLength = decodeUnit->fullLength;
   // Resize the decode buffer if needed
