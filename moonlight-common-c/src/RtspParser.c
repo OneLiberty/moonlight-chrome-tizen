@@ -27,7 +27,7 @@ static int getMessageLength(PRTSP_MESSAGE msg) {
     // Add length of response-specific strings
     else {
         char statusCodeStr[16];
-        sprintf(statusCodeStr, "%d", msg->message.response.statusCode);
+        snprintf(statusCodeStr, sizeof(statusCodeStr), "%d", msg->message.response.statusCode);
         count += strlen(statusCodeStr);
         count += strlen(msg->message.response.statusString);
         // two spaces and \r\n
@@ -63,6 +63,7 @@ int parseRtspMessage(PRTSP_MESSAGE msg, char* rtspMessage, int length) {
     char flag;
     bool messageEnded = false;
 
+    char* strtokCtx = NULL;
     char* payload = NULL;
     char* opt = NULL;
     int statusCode = 0;
@@ -89,7 +90,7 @@ int parseRtspMessage(PRTSP_MESSAGE msg, char* rtspMessage, int length) {
     messageBuffer[length] = 0;
 
     // Get the first token of the message
-    token = strtok(messageBuffer, delim);
+    token = strtok_r(messageBuffer, delim, &strtokCtx);
     if (token == NULL) {
         exitCode = RTSP_ERROR_MALFORMED;
         goto ExitFailure;
@@ -102,15 +103,15 @@ int parseRtspMessage(PRTSP_MESSAGE msg, char* rtspMessage, int length) {
         protocol = token;
 
         // Get the status code
-        token = strtok(NULL, delim);
-        statusCode = atoi(token);
+        token = strtok_r(NULL, delim, &strtokCtx);
         if (token == NULL) {
             exitCode = RTSP_ERROR_MALFORMED;
             goto ExitFailure;
         }
+        statusCode = atoi(token);
 
         // Get the status string
-        statusStr = strtok(NULL, end);
+        statusStr = strtok_r(NULL, end, &strtokCtx);
         if (statusStr == NULL) {
             exitCode = RTSP_ERROR_MALFORMED;
             goto ExitFailure;
@@ -125,12 +126,12 @@ int parseRtspMessage(PRTSP_MESSAGE msg, char* rtspMessage, int length) {
     else {
         flag = TYPE_REQUEST;
         command = token;
-        target = strtok(NULL, delim);
+        target = strtok_r(NULL, delim, &strtokCtx);
         if (target == NULL) {
             exitCode = RTSP_ERROR_MALFORMED;
             goto ExitFailure;
         }
-        protocol = strtok(NULL, delim);
+        protocol = strtok_r(NULL, delim, &strtokCtx);
         if (protocol == NULL) {
             exitCode = RTSP_ERROR_MALFORMED;
             goto ExitFailure;
@@ -145,7 +146,7 @@ int parseRtspMessage(PRTSP_MESSAGE msg, char* rtspMessage, int length) {
     // Parse remaining options
     while (token != NULL)
     {
-        token = strtok(NULL, typeFlag == TOKEN_OPTION ? optDelim : end);
+        token = strtok_r(NULL, typeFlag == TOKEN_OPTION ? optDelim : end, &strtokCtx);
         if (token != NULL) {
             if (typeFlag == TOKEN_OPTION) {
                 opt = token;
@@ -160,7 +161,7 @@ int parseRtspMessage(PRTSP_MESSAGE msg, char* rtspMessage, int length) {
                 }
                 newOpt->flags = 0;
                 newOpt->option = opt;
-                newOpt->content = token;
+                newOpt->content = token + 1; // Skip the protocol defined blank space
                 newOpt->next = NULL;
                 insertOption(&options, newOpt);
 
@@ -171,6 +172,16 @@ int parseRtspMessage(PRTSP_MESSAGE msg, char* rtspMessage, int length) {
                 // See if we've hit the end of the message. The first \r is missing because it's been tokenized
                 if (startsWith(endCheck, "\n") && endCheck[1] == '\0') {
                     // RTSP over ENet doesn't always have the second CRLF for some reason
+                    messageEnded = true;
+
+                    break;
+                }
+                else if (startsWith(endCheck, "\n\r") && endCheck[2] == '\0') {
+                    // Previous `if` statement already handle situation when two bytes are missing.
+                    // This is the workaround for the same problem, but for only one byte missing.
+                    // Sometimes on android emulators last byte or two bytes are missing.
+                    // This is link to this bug in Goggle Issue Tracker:
+                    // https://issuetracker.google.com/issues/150758736?pli=1
                     messageEnded = true;
 
                     break;
@@ -309,9 +320,22 @@ void freeOptionList(POPTION_ITEM optionsHead) {
     }
 }
 
+bool appendString(char* dest, int* destOffset, int* destRemainingLength, char* source) {
+    int ret = snprintf(&dest[*destOffset], *destRemainingLength, "%s", source);
+    if (ret < 0 || ret >= *destRemainingLength) {
+        LC_ASSERT(false);
+        return false;
+    }
+
+    *destOffset += ret;
+    *destRemainingLength -= ret;
+    return true;
+}
+
 // Serialize the message struct into a string containing the RTSP message
 char* serializeRtspMessage(PRTSP_MESSAGE msg, int* serializedLength) {
     int size = getMessageLength(msg);
+    int offset = 0;
     char* serializedMessage;
     POPTION_ITEM current = msg->options;
     char statusCodeStr[16];
@@ -323,44 +347,53 @@ char* serializeRtspMessage(PRTSP_MESSAGE msg, int* serializedLength) {
 
     if (msg->type == TYPE_REQUEST) {
         // command [space]
-        strcpy(serializedMessage, msg->message.request.command);
-        strcat(serializedMessage, " ");
+        if (!appendString(serializedMessage, &offset, &size, msg->message.request.command) || !appendString(serializedMessage, &offset, &size, " ")) {
+            goto fail;
+        }
         // target [space]
-        strcat(serializedMessage, msg->message.request.target);
-        strcat(serializedMessage, " ");
+        if (!appendString(serializedMessage, &offset, &size, msg->message.request.target) || !appendString(serializedMessage, &offset, &size, " ")) {
+            goto fail;
+        }
         // protocol \r\n
-        strcat(serializedMessage, msg->protocol);
-        strcat(serializedMessage, "\r\n");
+        if (!appendString(serializedMessage, &offset, &size, msg->protocol) || !appendString(serializedMessage, &offset, &size, "\r\n")) {
+            goto fail;
+        }
     }
     else {
         // protocol [space]
-        strcpy(serializedMessage, msg->protocol);
-        strcat(serializedMessage, " ");
+        if (!appendString(serializedMessage, &offset, &size, msg->protocol) || !appendString(serializedMessage, &offset, &size, " ")) {
+            goto fail;
+        }
         // status code [space]
-        sprintf(statusCodeStr, "%d", msg->message.response.statusCode);
-        strcat(serializedMessage, statusCodeStr);
-        strcat(serializedMessage, " ");
+        snprintf(statusCodeStr, sizeof(statusCodeStr), "%d", msg->message.response.statusCode);
+        if (!appendString(serializedMessage, &offset, &size, statusCodeStr) || !appendString(serializedMessage, &offset, &size, " ")) {
+            goto fail;
+        }
         // status str\r\n
-        strcat(serializedMessage, msg->message.response.statusString);
-        strcat(serializedMessage, "\r\n");
+        if (!appendString(serializedMessage, &offset, &size, msg->message.response.statusString) || !appendString(serializedMessage, &offset, &size, "\r\n")) {
+            goto fail;
+        }
     }
     // option content\r\n
     while (current != NULL) {
-        strcat(serializedMessage, current->option);
-        strcat(serializedMessage, ": ");
-        strcat(serializedMessage, current->content);
-        strcat(serializedMessage, "\r\n");
+        if (!appendString(serializedMessage, &offset, &size, current->option) || !appendString(serializedMessage, &offset, &size, ": ")) {
+            goto fail;
+        }
+        if (!appendString(serializedMessage, &offset, &size, current->content) || !appendString(serializedMessage, &offset, &size, "\r\n")) {
+            goto fail;
+        }
         current = current->next;
     }
     // Final \r\n
-    strcat(serializedMessage, "\r\n");
+    if (!appendString(serializedMessage, &offset, &size, "\r\n")) {
+        goto fail;
+    }
 
     // payload
     if (msg->payload != NULL) {
-        int offset;
-
-        // Find end of the RTSP message header
-        for (offset = 0; serializedMessage[offset] != 0; offset++);
+        if (msg->payloadLength > size) {
+            goto fail;
+        }
 
         // Add the payload after
         memcpy(&serializedMessage[offset], msg->payload, msg->payloadLength);
@@ -368,10 +401,14 @@ char* serializeRtspMessage(PRTSP_MESSAGE msg, int* serializedLength) {
         *serializedLength = offset + msg->payloadLength;
     }
     else {
-        *serializedLength = (int)strlen(serializedMessage);
+        *serializedLength = offset;
     }
 
     return serializedMessage;
+
+fail:
+    free(serializedMessage);
+    return NULL;
 }
 
 // Free everything in a msg struct

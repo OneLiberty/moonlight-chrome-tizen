@@ -5,8 +5,7 @@
 // that are incompatible with Winsock errors.
 #define _CRT_NO_POSIX_ERROR_CODES
 
-// Ignore CRT warnings about sprintf(), memcpy(), etc.
-#define _CRT_SECURE_NO_WARNINGS 1
+// Ignore CRT warnings about POSIX names
 #define _CRT_NONSTDC_NO_DEPRECATE 1
 #endif
 
@@ -53,6 +52,12 @@
 # endif
 #endif
 
+#ifdef LC_WINDOWS
+// Windows doesn't have strtok_r() but it has the same
+// function named strtok_s().
+#define strtok_r strtok_s
+#endif
+
 #include <stdio.h>
 #include "Limelight.h"
 
@@ -96,6 +101,17 @@
 #define LC_ASSERT(x) assert(x)
 #endif
 
+// If we're fuzzing, we don't want to enable asserts that can be affected by
+// bad input from the remote host. LC_ASSERT_VT() is used for assertions that
+// check data that comes from the host. These checks are enabled for normal
+// debug builds, since they indicate an error in Moonlight or on the host.
+// These are disabled when fuzzing, since the traffic is intentionally invalid.
+#ifdef LC_FUZZING
+#define LC_ASSERT_VT(x)
+#else
+#define LC_ASSERT_VT(x) LC_ASSERT(x)
+#endif
+
 #ifdef _MSC_VER
 #pragma intrinsic(_byteswap_ushort)
 #define BSWAP16(x) _byteswap_ushort(x)
@@ -122,6 +138,7 @@
 #define BE16(x) (x)
 #define BE32(x) (x)
 #define BE64(x) (x)
+#define IS_LITTLE_ENDIAN() (false)
 #else
 #define LE16(x) (x)
 #define LE32(x) (x)
@@ -129,9 +146,11 @@
 #define BE16(x) BSWAP16(x)
 #define BE32(x) BSWAP32(x)
 #define BE64(x) BSWAP64(x)
+#define IS_LITTLE_ENDIAN() (true)
 #endif
 
 int initializePlatform(void);
 void cleanupPlatform(void);
 
 uint64_t PltGetMillis(void);
+bool PltSafeStrcpy(char* dest, size_t dest_size, const char* src);

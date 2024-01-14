@@ -80,32 +80,19 @@ int gracefullyDisconnectEnetPeer(ENetHost* host, ENetPeer* peer, enet_uint32 lin
 }
 
 int extractVersionQuadFromString(const char* string, int* quad) {
-    char versionString[128];
-    char* nextDot;
-    char* nextNumber;
-    int i;
-    
-    strcpy(versionString, string);
-    nextNumber = versionString;
-    
-    for (i = 0; i < 4; i++) {
-        if (i == 3) {
-            nextDot = strchr(nextNumber, '\0');
+    const char* nextNumber = string;
+    for (int i = 0; i < 4; i++) {
+        // Parse the next component
+        quad[i] = (int)strtol(nextNumber, (char**)&nextNumber, 10);
+
+        // Skip the dot if we still have version components left.
+        //
+        // We continue looping even when we're at the end of the
+        // input string to ensure all subsequent version components
+        // are zeroed.
+        if (*nextNumber != 0) {
+            nextNumber++;
         }
-        else {
-            nextDot = strchr(nextNumber, '.');
-        }
-        if (nextDot == NULL) {
-            return -1;
-        }
-        
-        // Cut the string off at the next dot
-        *nextDot = '\0';
-        
-        quad[i] = atoi(nextNumber);
-        
-        // Move on to the next segment
-        nextNumber = nextDot + 1;
     }
     
     return 0;
@@ -119,16 +106,17 @@ void* extendBuffer(void* ptr, size_t newSize) {
     return newBuf;
 }
 
-bool isReferenceFrameInvalidationEnabled(void) {
+bool isReferenceFrameInvalidationSupportedByDecoder(void) {
     LC_ASSERT(NegotiatedVideoFormat != 0);
 
-    // Even if the client wants it, we can't enable it without server support.
-    if (!ReferenceFrameInvalidationSupported) {
-        return false;
-    }
-
     return ((NegotiatedVideoFormat & VIDEO_FORMAT_MASK_H264) && (VideoCallbacks.capabilities & CAPABILITY_REFERENCE_FRAME_INVALIDATION_AVC)) ||
-           ((NegotiatedVideoFormat & VIDEO_FORMAT_MASK_H265) && (VideoCallbacks.capabilities & CAPABILITY_REFERENCE_FRAME_INVALIDATION_HEVC));
+           ((NegotiatedVideoFormat & VIDEO_FORMAT_MASK_H265) && (VideoCallbacks.capabilities & CAPABILITY_REFERENCE_FRAME_INVALIDATION_HEVC)) ||
+           ((NegotiatedVideoFormat & VIDEO_FORMAT_MASK_AV1) && (VideoCallbacks.capabilities & CAPABILITY_REFERENCE_FRAME_INVALIDATION_AV1));
+}
+
+bool isReferenceFrameInvalidationEnabled(void) {
+    // RFI must be supported by the server and the client decoder to be used
+    return ReferenceFrameInvalidationSupported && isReferenceFrameInvalidationSupportedByDecoder();
 }
 
 void LiInitializeStreamConfiguration(PSTREAM_CONFIGURATION streamConfig) {
@@ -153,4 +141,8 @@ void LiInitializeServerInformation(PSERVER_INFORMATION serverInfo) {
 
 uint64_t LiGetMillis(void) {
     return PltGetMillis();
+}
+
+uint32_t LiGetHostFeatureFlags(void) {
+    return SunshineFeatureFlags;
 }

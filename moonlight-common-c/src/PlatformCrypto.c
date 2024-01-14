@@ -3,10 +3,16 @@
 #ifdef USE_MBEDTLS
 #include <mbedtls/entropy.h>
 #include <mbedtls/ctr_drbg.h>
+#include <mbedtls/version.h>
 
 mbedtls_entropy_context EntropyContext;
 mbedtls_ctr_drbg_context CtrDrbgContext;
 bool RandomStateInitialized = false;
+
+#if MBEDTLS_VERSION_MAJOR > 2 || (MBEDTLS_VERSION_MAJOR == 2 && MBEDTLS_VERSION_MINOR >= 25)
+#define USE_MBEDTLS_CRYPTO_EXT
+#endif
+
 #else
 #include <openssl/evp.h>
 #include <openssl/rand.h>
@@ -68,9 +74,39 @@ bool PltEncryptMessage(PPLT_CRYPTO_CONTEXT ctx, int algorithm, int flags,
     outLength = *outputDataLength;
 
     if (tag != NULL) {
+#ifdef USE_MBEDTLS_CRYPTO_EXT
+        // In mbedTLS, tag is always after ciphertext, while we need to put tag BEFORE ciphertext here
+        // To avoid frequent heap allocation, we will use some evil tricks...
+        // We only support 16 bytes sized tag
+        LC_ASSERT(tagLength == 16);
+        // Assume outputData is right after tag
+        LC_ASSERT(outputData == tag + tagLength);
+#ifndef LC_DEBUG
+        if (tagLength != 16 || outputData != tag + tagLength) {
+            return false;
+        }
+#endif
+        size_t encryptedLength = 0;
+        unsigned char * encryptedData = tag;
+        size_t encryptedCapacity = outLength + tagLength;
+        if (mbedtls_cipher_auth_encrypt_ext(&ctx->ctx, iv, ivLength, NULL, 0, inputData, inputDataLength, encryptedData,
+                                            encryptedCapacity, &encryptedLength, tagLength) != 0) {
+            return false;
+        }
+        outLength = encryptedLength - tagLength;
+
+        unsigned char tagTemp[16];
+        // Copy the tag to temp buffer
+        memcpy(tagTemp, encryptedData + outLength, tagLength);
+        // Move ciphertext to the end
+        memmove(encryptedData + tagLength, encryptedData, outLength);
+        // Copy back tag
+        memcpy(encryptedData, tagTemp, tagLength);
+#else
         if (mbedtls_cipher_auth_encrypt(&ctx->ctx, iv, ivLength, NULL, 0, inputData, inputDataLength, outputData, &outLength, tag, tagLength) != 0) {
             return false;
         }
+#endif
     }
     else {
         if (flags & CIPHER_FLAG_RESET_IV) {
@@ -240,9 +276,34 @@ bool PltDecryptMessage(PPLT_CRYPTO_CONTEXT ctx, int algorithm, int flags,
     outLength = *outputDataLength;
 
     if (tag != NULL) {
+#ifdef USE_MBEDTLS_CRYPTO_EXT
+        // We only support 16 bytes sized tag
+        LC_ASSERT(tagLength == 16);
+        // Assume inputData is right after tag
+        LC_ASSERT(inputData == tag + tagLength);
+#ifndef LC_DEBUG
+        if (tagLength != 16 || inputData != tag + tagLength) {
+            return false;
+        }
+#endif
+        unsigned char * encryptedData = tag;
+        size_t encryptedDataLen = inputDataLength + tagLength;
+        unsigned char tagTemp[16];
+        // Copy the tag to temp buffer
+        memcpy(tagTemp, encryptedData, tagLength);
+        // Move ciphertext to the beginning
+        memmove(encryptedData, encryptedData + tagLength, inputDataLength);
+        // Copy back tag to the end
+        memcpy(encryptedData + inputDataLength, tagTemp, tagLength);
+        if (mbedtls_cipher_auth_decrypt_ext(&ctx->ctx, iv, ivLength, NULL, 0, encryptedData, encryptedDataLen,
+                                            outputData, outLength, &outLength, tagLength) != 0) {
+            return false;
+        }
+#else
         if (mbedtls_cipher_auth_decrypt(&ctx->ctx, iv, ivLength, NULL, 0, inputData, inputDataLength, outputData, &outLength, tag, tagLength) != 0) {
             return false;
         }
+#endif
     }
     else {
         if (flags & CIPHER_FLAG_RESET_IV) {

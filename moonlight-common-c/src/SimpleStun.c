@@ -65,7 +65,7 @@ int LiFindExternalAddressIP4(const char* stunServer, unsigned short stunPort, un
     hints.ai_protocol = IPPROTO_UDP;
     hints.ai_flags = AI_ADDRCONFIG;
 
-    sprintf(stunPortStr, "%u", stunPort);
+    snprintf(stunPortStr, sizeof(stunPortStr), "%u", stunPort);
     err = getaddrinfo(stunServer, stunPortStr, &hints, &stunAddrs);
     if (err != 0 || stunAddrs == NULL) {
         Limelog("Failed to resolve STUN server: %d\n", err);
@@ -73,7 +73,7 @@ int LiFindExternalAddressIP4(const char* stunServer, unsigned short stunPort, un
         goto Exit;
     }
 
-    sock = bindUdpSocket(hints.ai_family, 2048);
+    sock = bindUdpSocket(hints.ai_family, NULL, 0, 0);
     if (sock == INVALID_SOCKET) {
         err = LastSocketFail();
         Limelog("Failed to connect to STUN server: %d\n", err);

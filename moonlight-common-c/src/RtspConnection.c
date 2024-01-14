@@ -72,8 +72,8 @@ static bool initializeRtspRequest(PRTSP_MESSAGE msg, char* command, char* target
     createRtspRequest(msg, NULL, 0, command, target, "RTSP/1.0",
         0, NULL, NULL, 0);
 
-    sprintf(sequenceNumberStr, "%d", currentSeqNumber++);
-    sprintf(clientVersionStr, "%d", rtspClientVersion);
+    snprintf(sequenceNumberStr, sizeof(sequenceNumberStr), "%d", currentSeqNumber++);
+    snprintf(clientVersionStr, sizeof(clientVersionStr), "%d", rtspClientVersion);
     if (!addOption(msg, "CSeq", sequenceNumberStr) ||
         !addOption(msg, "X-GS-ClientVersion", clientVersionStr) ||
         (!useEnet && !addOption(msg, "Host", urlAddr))) {
@@ -229,7 +229,7 @@ static bool transactRtspMessageTcp(PRTSP_MESSAGE request, PRTSP_MESSAGE response
     // returns HTTP 200 OK for the /launch request before the RTSP handshake port
     // is listening.
     do {
-        sock = connectTcpSocket(&RemoteAddr, RemoteAddrLen, RtspPortNumber, RTSP_CONNECT_TIMEOUT_SEC);
+        sock = connectTcpSocket(&RemoteAddr, AddrLen, RtspPortNumber, RTSP_CONNECT_TIMEOUT_SEC);
         if (sock == INVALID_SOCKET) {
             *error = LastSocketError();
             if (*error == ECONNREFUSED) {
@@ -318,6 +318,18 @@ static bool transactRtspMessageTcp(PRTSP_MESSAGE request, PRTSP_MESSAGE response
     }
     else {
         Limelog("Failed to parse RTSP response\n");
+    }
+
+    // Fetch the local address for this socket if it's not populated yet
+    if (LocalAddr.ss_family == 0) {
+        SOCKADDR_LEN addrLen = (SOCKADDR_LEN)sizeof(LocalAddr);
+        if (getsockname(sock, (struct sockaddr*)&LocalAddr, &addrLen) < 0) {
+            Limelog("Failed to get local address: %d\n", LastSocketError());
+            memset(&LocalAddr, 0, sizeof(LocalAddr));
+        }
+        else {
+            LC_ASSERT(addrLen == AddrLen);
+        }
     }
 
 Exit:
@@ -478,7 +490,7 @@ static bool sendVideoAnnounce(PRTSP_MESSAGE response, int* error) {
         request.flags |= FLAG_ALLOCATED_PAYLOAD;
         request.payloadLength = payloadLength;
 
-        sprintf(payloadLengthStr, "%d", payloadLength);
+        snprintf(payloadLengthStr, sizeof(payloadLengthStr), "%d", payloadLength);
         if (!addOption(&request, "Content-length", payloadLengthStr)) {
             goto FreeMessage;
         }
@@ -582,7 +594,7 @@ static int parseOpusConfigurations(PRTSP_MESSAGE response) {
         channelCount = CHANNEL_COUNT_FROM_AUDIO_CONFIGURATION(StreamConfig.audioConfiguration);
 
         // Find the correct audio parameter value
-        sprintf(paramsPrefix, "a=fmtp:97 surround-params=%d", channelCount);
+        snprintf(paramsPrefix, sizeof(paramsPrefix), "a=fmtp:97 surround-params=%d", channelCount);
         paramStart = strstr(response->payload, paramsPrefix);
         if (paramStart) {
             // Skip the prefix
@@ -657,7 +669,7 @@ static int parseOpusConfigurations(PRTSP_MESSAGE response) {
     return 0;
 }
 
-static bool parseUrlAddrFromRtspUrlString(const char* rtspUrlString, char* destination) {
+static bool parseUrlAddrFromRtspUrlString(const char* rtspUrlString, char* destination, size_t destinationLength) {
     char* rtspUrlScratchBuffer;
     char* portSeparator;
     char* v6EscapeEndChar;
@@ -701,9 +713,52 @@ static bool parseUrlAddrFromRtspUrlString(const char* rtspUrlString, char* desti
         *urlPathSeparator = 0;
     }
 
-    strcpy(destination, rtspUrlScratchBuffer + prefixLen);
+    if (!PltSafeStrcpy(destination, destinationLength, rtspUrlScratchBuffer + prefixLen)) {
+        free(rtspUrlScratchBuffer);
+        return false;
+    }
 
     free(rtspUrlScratchBuffer);
+    return true;
+}
+
+// SDP attributes are in the form:
+// a=x-nv-bwe.bwuSafeZoneLowLimit:70\r\n
+bool parseSdpAttributeToUInt(const char* payload, const char* name, unsigned int* val) {
+    // Find the entry for the specified attribute name
+    char* attribute = strstr(payload, name);
+    if (!attribute) {
+        return false;
+    }
+
+    // Locate the start of the value
+    char* valst = strstr(attribute, ":");
+    if (!valst) {
+        return false;
+    }
+
+    // Read the integer up to the newline at the end of the SDP attribute
+    *val = strtoul(valst + 1, NULL, 0);
+
+    return true;
+}
+
+bool parseSdpAttributeToInt(const char* payload, const char* name, int* val) {
+    // Find the entry for the specified attribute name
+    char* attribute = strstr(payload, name);
+    if (!attribute) {
+        return false;
+    }
+
+    // Locate the start of the value
+    char* valst = strstr(attribute, ":");
+    if (!valst) {
+        return false;
+    }
+
+    // Read the integer up to the newline at the end of the SDP attribute
+    *val = strtol(valst + 1, NULL, 0);
+
     return true;
 }
 
@@ -733,23 +788,22 @@ int performRtspHandshake(PSERVER_INFORMATION serverInfo) {
     if (OriginalVideoBitrate >= HIGH_AUDIO_BITRATE_THRESHOLD &&
             (AudioCallbacks.capabilities & CAPABILITY_SLOW_OPUS_DECODER) == 0 &&
             (StreamConfig.streamingRemotely != STREAM_CFG_REMOTE || CHANNEL_COUNT_FROM_AUDIO_CONFIGURATION(StreamConfig.audioConfiguration) <= 2)) {
-        // If we have an RTSP URL string and it was successfully parsed, use that string
-        if (serverInfo->rtspSessionUrl != NULL && parseUrlAddrFromRtspUrlString(serverInfo->rtspSessionUrl, urlAddr)) {
-            strcpy(rtspTargetUrl, serverInfo->rtspSessionUrl);
-        }
-        else {
+        // If we have an RTSP URL string and it was successfully parsed and copied, use that string
+        if (serverInfo->rtspSessionUrl == NULL ||
+                !parseUrlAddrFromRtspUrlString(serverInfo->rtspSessionUrl, urlAddr, sizeof(urlAddr)) ||
+                !PltSafeStrcpy(rtspTargetUrl, sizeof(rtspTargetUrl), serverInfo->rtspSessionUrl)) {
             // If an RTSP URL string was not provided or failed to parse, we will construct one now as best we can.
             //
             // NB: If the remote address is not a LAN address, the host will likely not enable high quality
             // audio since it only does that for local streaming normally. We can avoid this limitation,
             // but only if the caller gave us the RTSP session URL that it received from the host during launch.
-            addrToUrlSafeString(&RemoteAddr, urlAddr);
-            sprintf(rtspTargetUrl, "rtsp%s://%s:%u", useEnet ? "ru" : "", urlAddr, RtspPortNumber);
+            addrToUrlSafeString(&RemoteAddr, urlAddr, sizeof(urlAddr));
+            snprintf(rtspTargetUrl, sizeof(rtspTargetUrl), "rtsp%s://%s:%u", useEnet ? "ru" : "", urlAddr, RtspPortNumber);
         }
     }
     else {
-        strcpy(urlAddr, "0.0.0.0");
-        sprintf(rtspTargetUrl, "rtsp%s://%s:%u", useEnet ? "ru" : "", urlAddr, RtspPortNumber);
+        PltSafeStrcpy(urlAddr, sizeof(urlAddr), "0.0.0.0");
+        snprintf(rtspTargetUrl, sizeof(rtspTargetUrl), "rtsp%s://%s:%u", useEnet ? "ru" : "", urlAddr, RtspPortNumber);
     }
 
     switch (AppVersionQuad[0]) {
@@ -777,7 +831,7 @@ int performRtspHandshake(PSERVER_INFORMATION serverInfo) {
         ENetAddress address;
         ENetEvent event;
         
-        enet_address_set_address(&address, (struct sockaddr *)&RemoteAddr, RemoteAddrLen);
+        enet_address_set_address(&address, (struct sockaddr *)&RemoteAddr, AddrLen);
         enet_address_set_port(&address, RtspPortNumber);
         
         // Create a client that can use 1 outgoing connection and 1 channel
@@ -846,14 +900,28 @@ int performRtspHandshake(PSERVER_INFORMATION serverInfo) {
             goto Exit;
         }
         
-        // The RTSP DESCRIBE reply will contain a collection of SDP media attributes that
-        // describe the various supported video stream formats and include the SPS, PPS,
-        // and VPS (if applicable). We will use this information to determine whether the
-        // server can support HEVC. For some reason, they still set the MIME type of the HEVC
-        // format to H264, so we can't just look for the HEVC MIME type. What we'll do instead is
-        // look for the base 64 encoded VPS NALU prefix that is unique to the HEVC bitstream.
-        if (StreamConfig.supportsHevc && strstr(response.payload, "sprop-parameter-sets=AAAAAU")) {
-            if (StreamConfig.enableHdr) {
+        if ((StreamConfig.supportedVideoFormats & VIDEO_FORMAT_MASK_AV1) && strstr(response.payload, "AV1/90000")) {
+            if ((serverInfo->serverCodecModeSupport & SCM_AV1_MAIN10) && (StreamConfig.supportedVideoFormats & VIDEO_FORMAT_AV1_MAIN10)) {
+                NegotiatedVideoFormat = VIDEO_FORMAT_AV1_MAIN10;
+            }
+            else {
+                NegotiatedVideoFormat = VIDEO_FORMAT_AV1_MAIN8;
+
+                // Apply bitrate adjustment for SDR AV1 if the client requested one
+                if (StreamConfig.av1BitratePercentageMultiplier != 0) {
+                    StreamConfig.bitrate *= StreamConfig.av1BitratePercentageMultiplier;
+                    StreamConfig.bitrate /= 100;
+                }
+            }
+        }
+        else if ((StreamConfig.supportedVideoFormats & VIDEO_FORMAT_MASK_H265) && strstr(response.payload, "sprop-parameter-sets=AAAAAU")) {
+            // The RTSP DESCRIBE reply will contain a collection of SDP media attributes that
+            // describe the various supported video stream formats and include the SPS, PPS,
+            // and VPS (if applicable). We will use this information to determine whether the
+            // server can support HEVC. For some reason, they still set the MIME type of the HEVC
+            // format to H264, so we can't just look for the HEVC MIME type. What we'll do instead is
+            // look for the base 64 encoded VPS NALU prefix that is unique to the HEVC bitstream.
+            if ((serverInfo->serverCodecModeSupport & SCM_HEVC_MAIN10) && (StreamConfig.supportedVideoFormats & VIDEO_FORMAT_H265_MAIN10)) {
                 NegotiatedVideoFormat = VIDEO_FORMAT_H265_MAIN10;
             }
             else {
@@ -881,6 +949,11 @@ int performRtspHandshake(PSERVER_INFORMATION serverInfo) {
             Limelog("Reference frame invalidation is not supported by this host\n");
         }
 
+        // Look for the Sunshine feature flags in the SDP attributes
+        if (!parseSdpAttributeToUInt(response.payload, "x-ss-general.featureFlags", &SunshineFeatureFlags)) {
+            SunshineFeatureFlags = 0;
+        }
+
         // Parse the Opus surround parameters out of the RTSP DESCRIBE response.
         ret = parseOpusConfigurations(&response);
         if (ret != 0) {
@@ -893,7 +966,9 @@ int performRtspHandshake(PSERVER_INFORMATION serverInfo) {
     {
         RTSP_MESSAGE response;
         char* sessionId;
+        char* pingPayload;
         int error = -1;
+        char* strtokCtx = NULL;
 
         if (!setupStream(&response,
                          AppVersionQuad[0] >= 5 ? "streamid=audio/0/0" : "streamid=audio",
@@ -922,6 +997,13 @@ int performRtspHandshake(PSERVER_INFORMATION serverInfo) {
             Limelog("Audio port: %u\n", AudioPortNumber);
         }
 
+        // Parse the Sunshine ping payload protocol extension if present
+        memset(&AudioPingPayload, 0, sizeof(AudioPingPayload));
+        pingPayload = getOptionContent(response.options, "X-SS-Ping-Payload");
+        if (pingPayload != NULL && strlen(pingPayload) == sizeof(AudioPingPayload.payload)) {
+            memcpy(AudioPingPayload.payload, pingPayload, sizeof(AudioPingPayload.payload));
+        }
+
         // Let the audio stream know the port number is now finalized.
         // NB: This is needed because audio stream init happens before RTSP,
         // which is not the case for the video stream.
@@ -940,7 +1022,7 @@ int performRtspHandshake(PSERVER_INFORMATION serverInfo) {
         // resolves any 454 session not found errors on
         // standard RTSP server implementations.
         // (i.e - sessionId = "DEADBEEFCAFE;timeout = 90") 
-        sessionIdString = strdup(strtok(sessionId, ";"));
+        sessionIdString = strdup(strtok_r(sessionId, ";", &strtokCtx));
         if (sessionIdString == NULL) {
             Limelog("Failed to duplicate session ID string\n");
             ret = -1;
@@ -955,6 +1037,7 @@ int performRtspHandshake(PSERVER_INFORMATION serverInfo) {
     {
         RTSP_MESSAGE response;
         int error = -1;
+        char* pingPayload;
 
         if (!setupStream(&response,
                          AppVersionQuad[0] >= 5 ? "streamid=video/0/0" : "streamid=video",
@@ -969,6 +1052,13 @@ int performRtspHandshake(PSERVER_INFORMATION serverInfo) {
                 response.message.response.statusCode);
             ret = response.message.response.statusCode;
             goto Exit;
+        }
+
+        // Parse the Sunshine ping payload protocol extension if present
+        memset(&VideoPingPayload, 0, sizeof(VideoPingPayload));
+        pingPayload = getOptionContent(response.options, "X-SS-Ping-Payload");
+        if (pingPayload != NULL && strlen(pingPayload) == sizeof(VideoPingPayload.payload)) {
+            memcpy(VideoPingPayload.payload, pingPayload, sizeof(VideoPingPayload.payload));
         }
 
         // Parse the video port out of the RTSP SETUP response

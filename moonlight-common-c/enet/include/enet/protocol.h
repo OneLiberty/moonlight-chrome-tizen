@@ -1,4 +1,4 @@
-/** 
+/**
  @file  protocol.h
  @brief ENet protocol
 */
@@ -10,7 +10,7 @@
 enum
 {
    ENET_PROTOCOL_MINIMUM_MTU             = 576,
-#ifdef __WIIU__
+#if defined(__WIIU__) || defined(__3DS__)
    ENET_PROTOCOL_MAXIMUM_MTU             = 1400,
 #else
    ENET_PROTOCOL_MAXIMUM_MTU             = 4096,

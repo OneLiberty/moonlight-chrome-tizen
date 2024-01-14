@@ -33,7 +33,7 @@ DWORD (WINAPI *pfnWlanSetInterface)(HANDLE hClientHandle, CONST GUID *pInterface
 
 #endif
 
-void addrToUrlSafeString(struct sockaddr_storage* addr, char* string)
+void addrToUrlSafeString(struct sockaddr_storage* addr, char* string, size_t stringLength)
 {
     char addrstr[URLSAFESTRING_LEN];
 
@@ -43,7 +43,7 @@ void addrToUrlSafeString(struct sockaddr_storage* addr, char* string)
         inet_ntop(addr->ss_family, &sin6->sin6_addr, addrstr, sizeof(addrstr));
 
         // IPv6 addresses need to be enclosed in brackets for URLs
-        sprintf(string, "[%s]", addrstr);
+        snprintf(string, stringLength, "[%s]", addrstr);
     }
     else
 #endif
@@ -52,7 +52,7 @@ void addrToUrlSafeString(struct sockaddr_storage* addr, char* string)
         inet_ntop(addr->ss_family, &sin->sin_addr, addrstr, sizeof(addrstr));
 
         // IPv4 addresses are returned without changes
-        sprintf(string, "%s", addrstr);
+        snprintf(string, stringLength, "%s", addrstr);
     }
 }
 
@@ -86,7 +86,7 @@ int setNonFatalRecvTimeoutMs(SOCKET s, int timeoutMs) {
 }
 
 int pollSockets(struct pollfd* pollFds, int pollFdsCount, int timeoutMs) {
-#if defined(LC_WINDOWS) || defined(__vita__)
+#if defined(LC_WINDOWS)
     // We could have used WSAPoll() but it has some nasty bugs
     // https://daniel.haxx.se/blog/2012/10/10/wsapoll-is-broken/
     //
@@ -111,19 +111,10 @@ int pollSockets(struct pollfd* pollFds, int pollFdsCount, int timeoutMs) {
         if (pollFds[i].events & POLLOUT) {
             FD_SET(pollFds[i].fd, &writeFds);
 
-#ifdef LC_WINDOWS
             // Windows signals failed connections as an exception,
             // while Linux signals them as writeable.
             FD_SET(pollFds[i].fd, &exceptFds);
-#endif
         }
-        
-#ifndef LC_WINDOWS
-	// nfds is unused on Windows
-        if (pollFds[i].fd >= nfds) {
-            nfds = pollFds[i].fd + 1;
-        }
-#endif
     }
 
     tv.tv_sec = timeoutMs / 1000;
@@ -194,19 +185,20 @@ int recvUdpSocket(SOCKET s, char* buffer, int size, bool useSelect) {
             // for each packet.
             err = (int)recvfrom(s, buffer, size, 0, NULL, NULL);
             if (err < 0 &&
-#if defined(__EMSCRIPTEN__)
-// Temporary workaround - with newer Emscripten, errno codes are not
-// compatible with POSIX ones
-// TODO(j.gajownik2) Define mapping errno mapping WASI -> POSIX
+		#if defined(__EMSCRIPTEN__)
+		// Temporary workaround - with newer Emscripten, errno codes are not
+		// compatible with POSIX ones
+		// TODO(j.gajownik2) Define mapping errno mapping WASI -> POSIX
                     (LastSocketError() == __WASI_ERRNO_AGAIN ||
                      LastSocketError() == __WASI_ERRNO_INTR ||
                      LastSocketError() == __WASI_ERRNO_TIMEDOUT)) {
-#else
+		#else
                     (LastSocketError() == EWOULDBLOCK ||
                      LastSocketError() == EINTR ||
                      LastSocketError() == EAGAIN ||
-                     LastSocketError() == ETIMEDOUT)) {
-#endif
+		     LastSocketError() == ETIMEDOUT)) {
+		#endif
+    
                 // Return 0 for timeout
                 return 0;
             }
@@ -234,28 +226,36 @@ void closeSocket(SOCKET s) {
 #endif
 }
 
-SOCKET bindUdpSocket(int addrfamily, int bufferSize) {
+SOCKET bindUdpSocket(int addressFamily, struct sockaddr_storage* localAddr, SOCKADDR_LEN addrLen, int bufferSize) {
     SOCKET s;
-    struct sockaddr_storage addr;
+    LC_SOCKADDR bindAddr;
     int err;
-    SOCKADDR_LEN addrLen;
 
-#ifdef AF_INET6
-    LC_ASSERT(addrfamily == AF_INET || addrfamily == AF_INET6);
-    addrLen = (addrfamily == AF_INET ? sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6));
-#else
-    LC_ASSERT(addrfamily == AF_INET);
-    addrLen = sizeof(struct sockaddr_in);
-#endif
-
-    s = createSocket(addrfamily, SOCK_DGRAM, IPPROTO_UDP, false);
+    s = createSocket(addressFamily, SOCK_DGRAM, IPPROTO_UDP, false);
     if (s == INVALID_SOCKET) {
         return INVALID_SOCKET;
     }
 
-    memset(&addr, 0, sizeof(addr));
-    addr.ss_family = addrfamily;
-    if (bind(s, (struct sockaddr*) &addr, addrLen) == SOCKET_ERROR) {
+    // Use localAddr to bind if it was provided
+    if (localAddr && localAddr->ss_family != 0) {
+        memcpy(&bindAddr, localAddr, addrLen);
+        SET_PORT(&bindAddr, 0);
+    }
+    else {
+        // Otherwise wildcard bind to the specified address family
+        memset(&bindAddr, 0, sizeof(bindAddr));
+        SET_FAMILY(&bindAddr, addressFamily);
+
+#ifdef AF_INET6
+        LC_ASSERT(addressFamily == AF_INET || addressFamily == AF_INET6);
+        addrLen = (addressFamily == AF_INET ? sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6));
+#else
+        LC_ASSERT(addressFamily == AF_INET);
+        addrLen = sizeof(struct sockaddr_in);
+#endif
+    }
+
+    if (bind(s, (struct sockaddr*) &bindAddr, addrLen) == SOCKET_ERROR) {
         err = LastSocketError();
         Limelog("bind() failed: %d\n", err);
         closeSocket(s);
@@ -280,36 +280,45 @@ SOCKET bindUdpSocket(int addrfamily, int bufferSize) {
     }
 #endif
 
-    // We start at the requested recv buffer value and step down until we find
-    // a value that the OS will accept.
-    for (;;) {
-        err = setsockopt(s, SOL_SOCKET, SO_RCVBUF, (char*)&bufferSize, sizeof(bufferSize));
+    if (bufferSize != 0) {
+        // We start at the requested recv buffer value and step down until we find
+        // a value that the OS will accept.
+        for (;;) {
+            err = setsockopt(s, SOL_SOCKET, SO_RCVBUF, (char*)&bufferSize, sizeof(bufferSize));
+            if (err == 0) {
+                // Successfully set a buffer size
+                break;
+            }
+            else if (bufferSize <= RCV_BUFFER_SIZE_MIN) {
+                // Failed to set a buffer size within the allowable range
+                break;
+            }
+            else if (bufferSize - RCV_BUFFER_SIZE_STEP <= RCV_BUFFER_SIZE_MIN) {
+                // Last shot - we're trying the minimum
+                bufferSize = RCV_BUFFER_SIZE_MIN;
+            }
+            else {
+                // Lower the requested size by another step
+                bufferSize -= RCV_BUFFER_SIZE_STEP;
+            }
+        }
+
+#if defined(LC_DEBUG)
         if (err == 0) {
-            // Successfully set a buffer size
-            break;
-        }
-        else if (bufferSize <= RCV_BUFFER_SIZE_MIN) {
-            // Failed to set a buffer size within the allowable range
-            break;
-        }
-        else if (bufferSize - RCV_BUFFER_SIZE_STEP <= RCV_BUFFER_SIZE_MIN) {
-            // Last shot - we're trying the minimum
-            bufferSize = RCV_BUFFER_SIZE_MIN;
+            Limelog("Selected receive buffer size: %d\n", bufferSize);
         }
         else {
-            // Lower the requested size by another step
-            bufferSize -= RCV_BUFFER_SIZE_STEP;
+            Limelog("Unable to set receive buffer size: %d\n", LastSocketError());
         }
-    }
-    
-#if defined(LC_DEBUG)
-    if (err == 0) {
-        Limelog("Selected receive buffer size: %d\n", bufferSize);
-    }
-    else {
-        Limelog("Unable to set receive buffer size: %d\n", LastSocketError());
-    }
+
+        {
+            SOCKADDR_LEN len = sizeof(bufferSize);
+            if (getsockopt(s, SOL_SOCKET, SO_RCVBUF, (char*)&bufferSize, &len) == 0) {
+                Limelog("Actual receive buffer size: %d\n", bufferSize);
+            }
+        }
 #endif
+    }
 
     return s;
 }
@@ -518,7 +527,7 @@ int resolveHostName(const char* host, int family, int tcpTestPort, struct sockad
       hostWithoutBrackets[strlen(host) - 2] = '\0';
       host = hostWithoutBrackets;
     }
-    
+
     err = getaddrinfo(host, NULL, &hints, &res);
     if (err != 0) {
         Limelog("getaddrinfo(%s) failed: %d\n", host, err);

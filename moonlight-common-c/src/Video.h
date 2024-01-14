@@ -36,4 +36,26 @@ typedef struct _RTP_PACKET {
     uint32_t ssrc;
 } RTP_PACKET, *PRTP_PACKET;
 
+// Fields are big-endian
+typedef struct _SS_PING {
+    char payload[16];
+    uint32_t sequenceNumber;
+} SS_PING, *PSS_PING;
+
+// Fields are big-endian
+#define SS_FRAME_FEC_PTYPE 0x5502
+typedef struct _SS_FRAME_FEC_STATUS {
+    uint32_t frameIndex;
+    uint16_t highestReceivedSequenceNumber;
+    uint16_t nextContiguousSequenceNumber;
+    uint16_t missingPacketsBeforeHighestReceived;
+    uint16_t totalDataPackets;
+    uint16_t totalParityPackets;
+    uint16_t receivedDataPackets;
+    uint16_t receivedParityPackets;
+    uint8_t fecPercentage;
+    uint8_t multiFecBlockIndex;
+    uint8_t multiFecBlockCount;
+} SS_FRAME_FEC_STATUS, *PSS_FRAME_FEC_STATUS;
+
 #pragma pack(pop)

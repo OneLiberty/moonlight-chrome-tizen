@@ -1,8 +1,18 @@
-/** 
+/**
  @file  unix.c
  @brief ENet Unix system specific functions
 */
 #ifndef _WIN32
+
+// Required for IPV6_PKTINFO with Darwin headers
+#ifndef __APPLE_USE_RFC_3542
+#define __APPLE_USE_RFC_3542 1
+#endif
+
+// Required for in6_pktinfo with glibc headers
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1
+#endif
 
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -19,6 +29,9 @@
 #include "enet/enet.h"
 
 #if defined(__APPLE__)
+#if !defined(IPV6_RECVPKTINFO) || !defined(IPV6_PKTINFO)
+#warning Missing IPv6 socket option definitions. Is __APPLE_USE_RFC_3542 defined?
+#endif
 #ifndef HAS_POLL
 #define HAS_POLL 1
 #endif
@@ -99,6 +112,37 @@
 #ifndef NO_MSGAPI
 #define NO_MSGAPI 1
 #endif
+#elif defined(__3DS__)
+#ifdef AF_INET6
+#undef AF_INET6
+#endif
+#ifndef HAS_POLL
+#define HAS_POLL 1
+#endif
+#ifndef HAS_FCNTL
+#define HAS_FCNTL 1
+#endif
+#ifndef HAS_IOCTL
+#define HAS_IOCTL 1
+#endif
+#ifndef HAS_INET_PTON
+#define HAS_INET_PTON 1
+#endif
+#ifndef HAS_INET_NTOP
+#define HAS_INET_NTOP 1
+#endif
+#ifndef HAS_SOCKLEN_T
+#define HAS_SOCKLEN_T 1
+#endif
+#ifndef HAS_GETADDRINFO
+#define HAS_GETADDRINFO 1
+#endif
+#ifndef HAS_GETNAMEINFO
+#define HAS_GETNAMEINFO 1
+#endif
+#ifndef NO_MSGAPI
+#define NO_MSGAPI 1
+#endif
 #else
 #ifndef HAS_IOCTL
 #define HAS_IOCTL 1
@@ -149,9 +193,9 @@ enet_uint32
 enet_host_random_seed (void)
 {
     struct timeval timeVal;
-    
+
     gettimeofday (& timeVal, NULL);
-    
+
     return (timeVal.tv_sec * 1000) ^ (timeVal.tv_usec / 1000);
 }
 
@@ -171,9 +215,30 @@ enet_time_set (enet_uint32 newTimeBase)
     struct timeval timeVal;
 
     gettimeofday (& timeVal, NULL);
-    
+
     timeBase = timeVal.tv_sec * 1000 + timeVal.tv_usec / 1000 - newTimeBase;
 }
+
+#ifdef __APPLE__
+void
+enet_address_make_v4mapped (ENetAddress * address)
+{
+    ENetAddress oldAddress = *address;
+    struct sockaddr_in *sin = ((struct sockaddr_in *)&oldAddress.address);
+    struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)&address->address;
+    
+    memset(sin6, 0, sizeof(*sin6));
+    sin6->sin6_family = AF_INET6;
+    sin6->sin6_len = sizeof(*sin6);
+    sin6->sin6_port = sin->sin_port;
+    
+    sin6->sin6_addr.s6_addr[10] = 0xFF;
+    sin6->sin6_addr.s6_addr[11] = 0xFF;
+    memcpy(&sin6->sin6_addr.s6_addr[12], &sin->sin_addr, 4);
+    
+    address->addressLength = sizeof(*sin6);
+}
+#endif
 
 int
 enet_address_equal (ENetAddress * address1, ENetAddress * address2)
@@ -258,9 +323,9 @@ enet_address_set_host (ENetAddress * address, const char * name)
     {
         memcpy (& address -> address, result -> ai_addr, result -> ai_addrlen);
         address -> addressLength = result -> ai_addrlen;
-        
+
         freeaddrinfo (resultList);
-        
+
         return 0;
     }
 
@@ -289,7 +354,7 @@ enet_socket_get_address (ENetSocket socket, ENetAddress * address)
     return 0;
 }
 
-int 
+int
 enet_socket_listen (ENetSocket socket, int backlog)
 {
     return listen (socket, backlog < 0 ? SOMAXCONN : backlog);
@@ -298,7 +363,7 @@ enet_socket_listen (ENetSocket socket, int backlog)
 ENetSocket
 enet_socket_create (int af, ENetSocketType type)
 {
-	int sock_flags = 0;
+        int sock_flags = 0;
 #if defined(__EMSCRIPTEN__)
     // Workaround - cannot set created socket to non blocking mode
     sock_flags = SOCK_NONBLOCK;
@@ -313,7 +378,7 @@ enet_socket_set_option (ENetSocket socket, ENetSocketOption option, int value)
     switch (option)
     {
         case ENET_SOCKOPT_NONBLOCK:
-#if !defined (__EMSCRIPTEN__)
+#if !defined(__EMSCRIPTEN__)
 #ifdef HAS_FCNTL
             result = fcntl (socket, F_SETFL, (value ? O_NONBLOCK : 0) | (fcntl (socket, F_GETFL) & ~O_NONBLOCK));
 #else
@@ -338,7 +403,7 @@ enet_socket_set_option (ENetSocket socket, ENetSocketOption option, int value)
             result = setsockopt (socket, SOL_SOCKET, SO_SNDBUF, (char *) & value, sizeof (int));
             break;
 
-#ifndef __WIIU__
+#if !defined(__WIIU__) && !defined(__3DS__)
         case ENET_SOCKOPT_RCVTIMEO:
         {
             struct timeval timeVal;
@@ -386,6 +451,10 @@ enet_socket_set_option (ENetSocket socket, ENetSocketOption option, int value)
 #endif /* SO_NET_SERVICE_TYPE */
             break;
 
+        case ENET_SOCKOPT_TTL:
+            result = setsockopt (socket, IPPROTO_IP, IP_TTL, (char *) & value, sizeof (int));
+            break;
+
         default:
             break;
     }
@@ -402,6 +471,11 @@ enet_socket_get_option (ENetSocket socket, ENetSocketOption option, int * value)
         case ENET_SOCKOPT_ERROR:
             len = sizeof (int);
             result = getsockopt (socket, SOL_SOCKET, SO_ERROR, value, & len);
+            break;
+
+        case ENET_SOCKOPT_TTL:
+            len = sizeof (int);
+            result = getsockopt (socket, IPPROTO_IP, IP_TTL, (char *) value, & len);
             break;
 
         default:
@@ -430,10 +504,10 @@ enet_socket_accept (ENetSocket socket, ENetAddress * address)
     if (address != NULL)
       address -> addressLength = sizeof (address -> address);
 
-    result = accept (socket, 
-                     address != NULL ? (struct sockaddr *) & address -> address : NULL, 
+    result = accept (socket,
+                     address != NULL ? (struct sockaddr *) & address -> address : NULL,
                      address != NULL ? & address -> addressLength : NULL);
-    
+
     if (result == -1)
       return ENET_SOCKET_NULL;
 
@@ -455,30 +529,31 @@ enet_socket_destroy (ENetSocket socket)
 
 int
 enet_socket_send (ENetSocket socket,
-                  const ENetAddress * address,
+                  const ENetAddress * peerAddress,
+                  const ENetAddress * localAddress,
                   const ENetBuffer * buffers,
                   size_t bufferCount)
 {
     int sentLength;
-    
+
 #ifdef NO_MSGAPI
     void* sendBuffer;
     size_t sendLength;
-    
+
     if (bufferCount > 1)
     {
         size_t i;
-        
+
         sendLength = 0;
         for (i = 0; i < bufferCount; i++)
         {
             sendLength += buffers[i].dataLength;
         }
-        
+
         sendBuffer = malloc (sendLength);
         if (sendBuffer == NULL)
           return -1;
-        
+
         sendLength = 0;
         for (i = 0; i < bufferCount; i++)
         {
@@ -491,36 +566,77 @@ enet_socket_send (ENetSocket socket,
         sendBuffer = buffers[0].data;
         sendLength = buffers[0].dataLength;
     }
-    
+
     sentLength = sendto (socket, sendBuffer, sendLength, MSG_NOSIGNAL,
-        (struct sockaddr *) & address -> address, address -> addressLength);
-        
+        (struct sockaddr *) & peerAddress -> address, peerAddress -> addressLength);
+
     if (bufferCount > 1)
       free(sendBuffer);
 #else
     struct msghdr msgHdr;
+    char controlBufData[1024];
 
     memset (& msgHdr, 0, sizeof (struct msghdr));
 
-    if (address != NULL)
+    if (peerAddress != NULL)
     {
-        msgHdr.msg_name = (void*) & address -> address;
-        msgHdr.msg_namelen = address -> addressLength;
+        msgHdr.msg_name = (void*) & peerAddress -> address;
+        msgHdr.msg_namelen = peerAddress -> addressLength;
     }
 
     msgHdr.msg_iov = (struct iovec *) buffers;
     msgHdr.msg_iovlen = bufferCount;
 
+    // We always send traffic from the same local address as we last received
+    // from this peer to ensure it correctly recognizes our responses as
+    // coming from the expected host.
+    if (localAddress != NULL) {
+#ifdef IP_PKTINFO
+        if (localAddress->address.ss_family == AF_INET) {
+            struct in_pktinfo pktInfo;
+
+            pktInfo.ipi_spec_dst = ((struct sockaddr_in*)&localAddress->address)->sin_addr;
+            pktInfo.ipi_ifindex = 0; // Unspecified
+
+            msgHdr.msg_control = controlBufData;
+            msgHdr.msg_controllen = CMSG_SPACE(sizeof(pktInfo));
+
+            struct cmsghdr *chdr = CMSG_FIRSTHDR(&msgHdr);
+            chdr->cmsg_level = IPPROTO_IP;
+            chdr->cmsg_type = IP_PKTINFO;
+            chdr->cmsg_len = CMSG_LEN(sizeof(pktInfo));
+            memcpy(CMSG_DATA(chdr), &pktInfo, sizeof(pktInfo));
+        }
+#endif
+#ifdef IPV6_PKTINFO
+        if (localAddress->address.ss_family == AF_INET6) {
+            struct in6_pktinfo pktInfo;
+
+            pktInfo.ipi6_addr = ((struct sockaddr_in6*)&localAddress->address)->sin6_addr;
+            pktInfo.ipi6_ifindex = 0; // Unspecified
+
+            msgHdr.msg_control = controlBufData;
+            msgHdr.msg_controllen = CMSG_SPACE(sizeof(pktInfo));
+
+            struct cmsghdr *chdr = CMSG_FIRSTHDR(&msgHdr);
+            chdr->cmsg_level = IPPROTO_IPV6;
+            chdr->cmsg_type = IPV6_PKTINFO;
+            chdr->cmsg_len = CMSG_LEN(sizeof(pktInfo));
+            memcpy(CMSG_DATA(chdr), &pktInfo, sizeof(pktInfo));
+        }
+ #endif
+    }
+
     sentLength = sendmsg (socket, & msgHdr, MSG_NOSIGNAL);
 #endif
-    
+
     if (sentLength == -1)
     {
 #if defined(__EMSCRIPTEN__)
 // Temporary workaround - with newer Emscripten, errno codes are not
 // compatible with POSIX ones
 // TODO(j.gajownik2) Define mapping errno mapping WASI -> POSIX
-	   if (errno == __WASI_ERRNO_AGAIN)
+       if (errno == __WASI_ERRNO_AGAIN)
 #else
        if (errno == EWOULDBLOCK)
 #endif
@@ -534,7 +650,8 @@ enet_socket_send (ENetSocket socket,
 
 int
 enet_socket_receive (ENetSocket socket,
-                     ENetAddress * address,
+                     ENetAddress * peerAddress,
+                     ENetAddress * localAddress,
                      ENetBuffer * buffers,
                      size_t bufferCount)
 {
@@ -542,40 +659,43 @@ enet_socket_receive (ENetSocket socket,
 
 #ifdef NO_MSGAPI
     // This will ONLY work with a single buffer!
-    
-    address -> addressLength = sizeof (address -> address);
+
+    peerAddress -> addressLength = sizeof (peerAddress -> address);
     recvLength = recvfrom (socket, buffers[0].data, buffers[0].dataLength, MSG_NOSIGNAL,
-        (struct sockaddr *) & address -> address, & address -> addressLength);
-    
+        (struct sockaddr *) & peerAddress -> address, & peerAddress -> addressLength);
+
     if (recvLength == -1)
     {
 #if defined(__EMSCRIPTEN__)
 // Temporary workaround - with newer Emscripten, errno codes are not
 // compatible with POSIX ones
 // TODO(j.gajownik2) Define mapping errno mapping WASI -> POSIX
-	   if (errno == __WASI_ERRNO_AGAIN)
+       if (errno == __WASI_ERRNO_AGAIN)
 #else
        if (errno == EWOULDBLOCK)
 #endif
          return 0;
-     
+
        return -1;
     }
-    
+
     return recvLength;
 #else
     struct msghdr msgHdr;
+    char controlBufData[1024];
 
     memset (& msgHdr, 0, sizeof (struct msghdr));
 
-    if (address != NULL)
+    if (peerAddress != NULL)
     {
-        msgHdr.msg_name = & address -> address;
-        msgHdr.msg_namelen = sizeof (address -> address);
+        msgHdr.msg_name = & peerAddress -> address;
+        msgHdr.msg_namelen = sizeof (peerAddress -> address);
     }
 
     msgHdr.msg_iov = (struct iovec *) buffers;
     msgHdr.msg_iovlen = bufferCount;
+    msgHdr.msg_control = controlBufData;
+    msgHdr.msg_controllen = sizeof(controlBufData);
 
     recvLength = recvmsg (socket, & msgHdr, MSG_NOSIGNAL);
 
@@ -593,14 +713,54 @@ enet_socket_receive (ENetSocket socket,
 
        return -1;
     }
-    
-    if (address != NULL)
-      address -> addressLength = msgHdr.msg_namelen;
 
 #ifdef HAS_MSGHDR_FLAGS
     if (msgHdr.msg_flags & MSG_TRUNC)
-      return -1;
+      return -2;
 #endif
+
+    // Retrieve the local address that this traffic was received on
+    // to ensure we respond from the correct address/interface.
+    if (localAddress != NULL) {
+        for (struct cmsghdr *chdr = CMSG_FIRSTHDR(&msgHdr); chdr != NULL; chdr = CMSG_NXTHDR(&msgHdr, chdr)) {
+#ifdef IP_PKTINFO
+            if (chdr->cmsg_level == IPPROTO_IP && chdr->cmsg_type == IP_PKTINFO) {
+                struct sockaddr_in *localAddr = (struct sockaddr_in*)&localAddress->address;
+
+                localAddr->sin_family = AF_INET;
+                localAddr->sin_addr = ((struct in_pktinfo*)CMSG_DATA(chdr))->ipi_addr;
+
+                localAddress->addressLength = sizeof(*localAddr);
+                break;
+            }
+#endif
+#ifdef IPV6_PKTINFO
+            if (chdr->cmsg_level == IPPROTO_IPV6 && chdr->cmsg_type == IPV6_PKTINFO) {
+                struct sockaddr_in6 *localAddr = (struct sockaddr_in6*)&localAddress->address;
+
+                localAddr->sin6_family = AF_INET6;
+                localAddr->sin6_addr = ((struct in6_pktinfo*)CMSG_DATA(chdr))->ipi6_addr;
+
+                localAddress->addressLength = sizeof(*localAddr);
+                break;
+            }
+ #endif
+        }
+    }
+
+    if (peerAddress != NULL) {
+        peerAddress -> addressLength = msgHdr.msg_namelen;
+        
+#ifdef __APPLE__
+        // HACK: Apple platforms return AF_INET addresses in msg_name from recvmsg() on dual-stack sockets
+        // instead of AF_INET6 addresses then rejects those same addresses when they are passed to sendmsg().
+        // Strangely, this only happens when the socket is bound, and IPV6_PKTINFO properly returns v4-mapped
+        // addresses in the same call. This is probably a kernel bug, so we fix it up here.
+        if (peerAddress -> address.ss_family == AF_INET && localAddress -> address.ss_family == AF_INET6) {
+            enet_address_make_v4mapped(peerAddress);
+        }
+#endif
+    }
 
     return recvLength;
 #endif
@@ -623,7 +783,7 @@ enet_socket_wait (ENetSocket socket, enet_uint32 * condition, enet_uint32 timeou
 #ifdef HAS_POLL
     struct pollfd pollSocket;
     int pollCount;
-    
+
     pollSocket.fd = socket;
     pollSocket.events = 0;
 
@@ -654,7 +814,7 @@ enet_socket_wait (ENetSocket socket, enet_uint32 * condition, enet_uint32 timeou
 
     if (pollSocket.revents & POLLOUT)
       * condition |= ENET_SOCKET_WAIT_SEND;
-    
+
     if (pollSocket.revents & POLLIN)
       * condition |= ENET_SOCKET_WAIT_RECEIVE;
 
@@ -686,7 +846,7 @@ enet_socket_wait (ENetSocket socket, enet_uint32 * condition, enet_uint32 timeou
 
             return 0;
         }
-      
+
         return -1;
     }
 

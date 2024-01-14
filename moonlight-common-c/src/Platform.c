@@ -411,6 +411,40 @@ uint64_t PltGetMillis(void) {
 #endif
 }
 
+bool PltSafeStrcpy(char* dest, size_t dest_size, const char* src) {
+    LC_ASSERT(dest_size > 0);
+
+#ifdef LC_DEBUG
+    // In debug builds, do the same little trick that MSVC
+    // does to ensure the entire buffer is writable.
+    memset(dest, 0xFE, dest_size);
+#endif
+
+#ifdef _MSC_VER
+    // strncpy_s() with _TRUNCATE does what we need for MSVC.
+    // We use this rather than strcpy_s() because we don't want
+    // the invalid parameter handler invoked upon failure.
+    if (strncpy_s(dest, dest_size, src, _TRUNCATE) != 0) {
+        LC_ASSERT(false);
+        dest[0] = 0;
+        return false;
+    }
+#else
+    // Check length of the source and destination strings before
+    // the strcpy() call. Set destination to an empty string if
+    // the source string doesn't fit in the destination.
+    if (strlen(src) >= dest_size) {
+        LC_ASSERT(false);
+        dest[0] = 0;
+        return false;
+    }
+
+    strcpy(dest, src);
+#endif
+
+    return true;
+}
+
 int initializePlatform(void) {
     int err;
 

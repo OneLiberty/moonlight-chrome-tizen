@@ -1,6 +1,8 @@
-cmake_minimum_required(VERSION 2.8.12)
+cmake_minimum_required(VERSION 2.8.12...3.20)
 
 project(enet)
+
+option(ENET_NO_INSTALL "Disable installation of headers and libraries" OFF)
 
 # The "configure" step.
 include(CheckFunctionExists)
@@ -19,7 +21,7 @@ check_struct_has_member("struct msghdr" "msg_flags" "sys/types.h;sys/socket.h" H
 set(CMAKE_EXTRA_INCLUDE_FILES "sys/types.h" "sys/socket.h")
 check_type_size("socklen_t" HAS_SOCKLEN_T BUILTIN_TYPES_ONLY)
 unset(CMAKE_EXTRA_INCLUDE_FILES)
-set(CMAKE_EXTRA_INCLUDE_FILES "qos2.h")
+set(CMAKE_EXTRA_INCLUDE_FILES "winsock2.h;qos2.h")
 check_type_size("QOS_FLOWID" HAS_QOS_FLOWID BUILTIN_TYPES_ONLY)
 check_type_size("PQOS_FLOWID" HAS_PQOS_FLOWID BUILTIN_TYPES_ONLY)
 unset(CMAKE_EXTRA_INCLUDE_FILES)
@@ -106,4 +108,14 @@ target_include_directories(enet SYSTEM PUBLIC include)
 
 if (MINGW)
     target_link_libraries(enet winmm ws2_32)
+endif()
+
+if(NOT ENET_NO_INSTALL)
+    install(TARGETS enet
+        RUNTIME DESTINATION bin
+        ARCHIVE DESTINATION lib/static
+        LIBRARY DESTINATION lib)
+
+    install(DIRECTORY include/
+            DESTINATION include)
 endif()

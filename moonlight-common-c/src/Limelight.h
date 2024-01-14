@@ -20,7 +20,7 @@ extern "C" {
 #define STREAM_CFG_AUTO    2
 
 // Values for the 'colorSpace' field below.
-// Rec. 2020 is only supported with HEVC video streams.
+// Rec. 2020 is not supported with H.264 video streams on GFE hosts.
 #define COLORSPACE_REC_601  0
 #define COLORSPACE_REC_709  1
 #define COLORSPACE_REC_2020 2
@@ -75,11 +75,21 @@ typedef struct _STREAM_CONFIGURATION {
     // the client display into HDR mode.
     bool enableHdr;
 
+    // Specifies the mask of supported video formats.
+    // See VIDEO_FORMAT constants below.
+    int supportedVideoFormats;
+
     // Specifies the percentage that the specified bitrate will be adjusted
     // when an HEVC stream will be delivered. This allows clients to opt to
     // reduce bandwidth when HEVC is chosen as the video codec rather than
     // (or in addition to) improving image quality.
     int hevcBitratePercentageMultiplier;
+
+    // Specifies the percentage that the specified bitrate will be adjusted
+    // when an AV1 stream will be delivered. This allows clients to opt to
+    // reduce bandwidth when AV1 is chosen as the video codec rather than
+    // (or in addition to) improving image quality.
+    int av1BitratePercentageMultiplier;
 
     // If specified, the client's display refresh rate x 100. For example,
     // 59.94 Hz would be specified as 5994. This is used by recent versions
@@ -113,7 +123,8 @@ typedef struct _STREAM_CONFIGURATION {
 void LiInitializeStreamConfiguration(PSTREAM_CONFIGURATION streamConfig);
 
 // These identify codec configuration data in the buffer lists
-// of frames identified as IDR frames.
+// of frames identified as IDR frames for H.264 and HEVC formats.
+// For other codecs, all data is marked as BUFFER_TYPE_PICDATA.
 #define BUFFER_TYPE_PICDATA  0x00
 #define BUFFER_TYPE_SPS      0x01
 #define BUFFER_TYPE_PPS      0x02
@@ -129,7 +140,7 @@ typedef struct _LENTRY {
     // Size of data in bytes (never <= 0)
     int length;
 
-    // Buffer type (listed above)
+    // Buffer type (listed above, only set for H.264 and HEVC formats)
     int bufferType;
 } LENTRY, *PLENTRY;
 
@@ -137,10 +148,13 @@ typedef struct _LENTRY {
 // previous P-frames.
 #define FRAME_TYPE_PFRAME 0x00
 
-// Indicates this frame contains SPS, PPS, and VPS (if applicable)
-// as the first buffers in the list. Each NALU will appear as a separate
-// buffer in the buffer list. The I-frame data follows immediately
+// This is a key frame.
+//
+// For H.264 and HEVC, this means the frame contains SPS, PPS, and VPS (HEVC only) NALUs
+// as the first buffers in the list. The I-frame data follows immediately
 // after the codec configuration NALUs.
+//
+// For other codecs, any configuration data is not split into separate buffers.
 #define FRAME_TYPE_IDR    0x01
 
 // A decode unit describes a buffer chain of video data from multiple packets
@@ -150,6 +164,12 @@ typedef struct _DECODE_UNIT {
 
     // Frame type
     int frameType;
+
+    // Optional host processing latency of the frame, in 1/10 ms units.
+    // Zero when the host doesn't provide the latency data
+    // or frame processing latency is not applicable to the current frame
+    // (happens when the frame is repeated).
+    uint16_t frameHostProcessingLatency;
 
     // Receive time of first buffer. This value uses an implementation-defined epoch,
     // but the same epoch as enqueueTimeMs and LiGetMillis().
@@ -172,6 +192,18 @@ typedef struct _DECODE_UNIT {
 
     // Head of the buffer chain (never NULL)
     PLENTRY bufferList;
+
+    // Determines if this frame is SDR or HDR
+    //
+    // Note: This is not currently parsed from the actual bitstream, so if your
+    // client has access to a bitstream parser, prefer that over this field.
+    bool hdrActive;
+
+    // Provides the colorspace of this frame (see COLORSPACE_* defines above)
+    //
+    // Note: This is not currently parsed from the actual bitstream, so if your
+    // client has access to a bitstream parser, prefer that over this field.
+    uint8_t colorspace;
 } DECODE_UNIT, *PDECODE_UNIT;
 
 // Specifies that the audio stream should be encoded in stereo (default)
@@ -201,22 +233,19 @@ typedef struct _DECODE_UNIT {
 // The maximum number of channels supported
 #define AUDIO_CONFIGURATION_MAX_CHANNEL_COUNT 8
 
-// Passed to DecoderRendererSetup to indicate that the following video stream will be
-// in H.264 High Profile.
-#define VIDEO_FORMAT_H264 0x0001
-
-// Passed to DecoderRendererSetup to indicate that the following video stream will be
-// in H.265 Main profile. This will only be passed if supportsHevc is true.
-#define VIDEO_FORMAT_H265 0x0100
-
-// Passed to DecoderRendererSetup to indicate that the following video stream will be
-// in H.265 Main10 (HDR10) profile. This will only be passed if enableHdr is true.
-#define VIDEO_FORMAT_H265_MAIN10 0x0200
+// Passed in StreamConfiguration.supportedVideoFormats to specify supported codecs
+// and to DecoderRendererSetup() to specify selected codec.
+#define VIDEO_FORMAT_H264        0x0001 // H.264 High Profile
+#define VIDEO_FORMAT_H265        0x0100 // HEVC Main Profile
+#define VIDEO_FORMAT_H265_MAIN10 0x0200 // HEVC Main10 Profile
+#define VIDEO_FORMAT_AV1_MAIN8   0x1000 // AV1 Main 8-bit profile
+#define VIDEO_FORMAT_AV1_MAIN10  0x2000 // AV1 Main 10-bit profile
 
 // Masks for clients to use to match video codecs without profile-specific details.
-#define VIDEO_FORMAT_MASK_H264  0x00FF
-#define VIDEO_FORMAT_MASK_H265  0xFF00
-#define VIDEO_FORMAT_MASK_10BIT 0x0200
+#define VIDEO_FORMAT_MASK_H264  0x000F
+#define VIDEO_FORMAT_MASK_H265  0x0F00
+#define VIDEO_FORMAT_MASK_AV1   0xF000
+#define VIDEO_FORMAT_MASK_10BIT 0x2200
 
 // If set in the renderer capabilities field, this flag will cause audio/video data to
 // be submitted directly from the receive thread. This should only be specified if the
@@ -249,6 +278,10 @@ typedef struct _DECODE_UNIT {
 // LiCompleteVideoFrame(), and similar) to receive A/V data. Setting this capability while
 // also providing a sample callback is not allowed.
 #define CAPABILITY_PULL_RENDERER 0x20
+
+// If set in the video renderer capabilities field, this flag specifies that the renderer
+// supports reference frame invalidation for AV1 streams. This flag is only valid on video renderers.
+#define CAPABILITY_REFERENCE_FRAME_INVALIDATION_AV1 0x40
 
 // If set in the video renderer capabilities field, this macro specifies that the renderer
 // supports slicing to increase decoding performance. The parameter specifies the desired
@@ -433,8 +466,22 @@ typedef void(*ConnListenerConnectionStatusUpdate)(int connectionStatus);
 // This callback is invoked to notify the client of a change in HDR mode on
 // the host. The client will probably want to update the local display mode
 // to match the state of HDR on the host. This callback may be invoked even
-// if enableHdr is false in the stream configuration.
+// if the stream is not using an HDR-capable codec.
 typedef void(*ConnListenerSetHdrMode)(bool hdrEnabled);
+
+// This callback is invoked to rumble a gamepad's triggers. For more details,
+// see the comment above on ConnListenerRumble().
+typedef void(*ConnListenerRumbleTriggers)(uint16_t controllerNumber, uint16_t leftTriggerMotor, uint16_t rightTriggerMotor);
+
+// This callback is invoked to notify the client that the host would like motion
+// sensor reports for the specified gamepad (see LiSendControllerMotionEvent())
+// at the specified reporting rate (or as close as possible).
+//
+// If reportRateHz is 0, the host is asking for motion event reporting to stop.
+typedef void(*ConnListenerSetMotionEventState)(uint16_t controllerNumber, uint8_t motionType, uint16_t reportRateHz);
+
+// This callback is invoked to set a controller's RGB LED (if present).
+typedef void(*ConnListenerSetControllerLED)(uint16_t controllerNumber, uint8_t r, uint8_t g, uint8_t b);
 
 typedef struct _CONNECTION_LISTENER_CALLBACKS {
     ConnListenerStageStarting stageStarting;
@@ -446,11 +493,26 @@ typedef struct _CONNECTION_LISTENER_CALLBACKS {
     ConnListenerRumble rumble;
     ConnListenerConnectionStatusUpdate connectionStatusUpdate;
     ConnListenerSetHdrMode setHdrMode;
+    ConnListenerRumbleTriggers rumbleTriggers;
+    ConnListenerSetMotionEventState setMotionEventState;
+    ConnListenerSetControllerLED setControllerLED;
 } CONNECTION_LISTENER_CALLBACKS, *PCONNECTION_LISTENER_CALLBACKS;
 
 // Use this function to zero the connection callbacks when allocated on the stack or heap
 void LiInitializeConnectionCallbacks(PCONNECTION_LISTENER_CALLBACKS clCallbacks);
 
+// ServerCodecModeSupport values
+#define SCM_H264        0x00001
+#define SCM_HEVC        0x00100
+#define SCM_HEVC_MAIN10 0x00200
+#define SCM_AV1_MAIN8   0x10000 // Sunshine extension
+#define SCM_AV1_MAIN10  0x20000 // Sunshine extension
+
+// SCM masks to identify various codec capabilities
+#define SCM_MASK_H264   SCM_H264
+#define SCM_MASK_HEVC   (SCM_HEVC | SCM_HEVC_MAIN10)
+#define SCM_MASK_AV1    (SCM_AV1_MAIN8 | SCM_AV1_MAIN10)
+#define SCM_MASK_10BIT  (SCM_HEVC_MAIN10 | SCM_AV1_MAIN10)
 
 typedef struct _SERVER_INFORMATION {
     // Server host name or IP address in text form
@@ -464,6 +526,9 @@ typedef struct _SERVER_INFORMATION {
 
     // Text inside 'sessionUrl0' tag in /resume and /launch (if present)
     const char* rtspSessionUrl;
+
+    // Specifies the 'ServerCodecModeSupport' from the /serverinfo response.
+    int serverCodecModeSupport;
 } SERVER_INFORMATION, *PSERVER_INFORMATION;
 
 // Use this function to zero the server information when allocated on the stack or heap
@@ -505,8 +570,10 @@ int LiSendMouseMoveEvent(short deltaX, short deltaY);
 // may not position the mouse correctly.
 //
 // Absolute mouse motion doesn't work in many games, so this mode should not be the default
-// for mice when streaming. It may be desirable as the default touchscreen behavior if the
-// touchscreen is not the primary input method.
+// for mice when streaming. It may be desirable as the default touchscreen behavior when
+// LiSendTouchEvent() is not supported and the touchscreen is not the primary input method.
+// In the latter case, a touchscreen-as-trackpad mode using LiSendMouseMoveEvent() is likely
+// to be better for gaming use cases.
 //
 // The x and y values are transformed to host coordinates as if they are from a plane which
 // is referenceWidth by referenceHeight in size. This allows you to provide coordinates that
@@ -535,6 +602,78 @@ int LiSendMousePositionEvent(short x, short y, short referenceWidth, short refer
 // Using this function avoids double-acceleration in cases when the client motion is also accelerated.
 int LiSendMouseMoveAsMousePositionEvent(short deltaX, short deltaY, short referenceWidth, short referenceHeight);
 
+// Error return value to indicate that the requested functionality is not supported by the host
+#define LI_ERR_UNSUPPORTED -5501
+
+// This function allows multi-touch input to be sent directly to Sunshine hosts. The x and y values
+// are normalized device coordinates stretching top-left corner (0.0, 0.0) to bottom-right corner
+// (1.0, 1.0) of the video area.
+//
+// Pointer ID is an opaque ID that must uniquely identify each active touch on screen. It must
+// remain constant through any down/up/move/cancel events involved in a single touch interaction.
+//
+// Rotation is in degrees from vertical in Y dimension (parallel to screen, 0..360). If rotation is
+// unknown, pass LI_ROT_UNKNOWN.
+//
+// Pressure is a 0.0 to 1.0 range value from min to max pressure. Sending a down/move event with
+// a pressure of 0.0 indicates the actual pressure is unknown.
+//
+// For hover events, the pressure value is treated as a 1.0 to 0.0 range of distance from the touch
+// surface where 1.0 is the farthest measurable distance and 0.0 is actually touching the display
+// (which is invalid for a hover event). Reporting distance 0.0 for a hover event indicates the
+// actual distance is unknown.
+//
+// Contact area is modelled as an ellipse with major and minor axis values in normalized device
+// coordinates. If contact area is unknown, report 0.0 for both contact area axis parameters.
+// For circular contact areas or if a minor axis value is not available, pass the same value
+// for major and minor axes. For APIs or devices, that don't report contact area as an ellipse,
+// approximations can be used such as: https://docs.kernel.org/input/multi-touch-protocol.html#event-computation
+//
+// For hover events, the "contact area" is the size of the hovering finger/tool. If unavailable,
+// pass 0.0 for both contact area parameters.
+//
+// Touches can be cancelled using LI_TOUCH_EVENT_CANCEL or LI_TOUCH_EVENT_CANCEL_ALL. When using
+// LI_TOUCH_EVENT_CANCEL, only the pointerId parameter is valid. All other parameters are ignored.
+// To cancel all active touches (on focus loss, for example), use LI_TOUCH_EVENT_CANCEL_ALL.
+//
+// If unsupported by the host, this will return LI_ERR_UNSUPPORTED and the caller should consider
+// falling back to other functions to send this input (such as LiSendMousePositionEvent()).
+//
+// To determine if LiSendTouchEvent() is supported without calling it, call LiGetHostFeatureFlags()
+// and check for the LI_FF_PEN_TOUCH_EVENTS flag.
+#define LI_TOUCH_EVENT_HOVER       0x00
+#define LI_TOUCH_EVENT_DOWN        0x01
+#define LI_TOUCH_EVENT_UP          0x02
+#define LI_TOUCH_EVENT_MOVE        0x03
+#define LI_TOUCH_EVENT_CANCEL      0x04
+#define LI_TOUCH_EVENT_BUTTON_ONLY 0x05
+#define LI_TOUCH_EVENT_HOVER_LEAVE 0x06
+#define LI_TOUCH_EVENT_CANCEL_ALL  0x07
+#define LI_ROT_UNKNOWN 0xFFFF
+int LiSendTouchEvent(uint8_t eventType, uint32_t pointerId, float x, float y, float pressureOrDistance,
+                     float contactAreaMajor, float contactAreaMinor, uint16_t rotation);
+
+// This function is similar to LiSendTouchEvent() but allows additional parameters relevant for pen
+// input, including tilt and buttons. Tilt is in degrees from vertical in Z dimension (perpendicular
+// to screen, 0..90). See LiSendTouchEvent() for detailed documentation on other parameters.
+//
+// x, y, pressure, rotation, contact area, and tilt are ignored for LI_TOUCH_EVENT_BUTTON_ONLY events.
+// If one of those changes, send LI_TOUCH_EVENT_MOVE or LI_TOUCH_EVENT_HOVER instead.
+//
+// To determine if LiSendPenEvent() is supported without calling it, call LiGetHostFeatureFlags()
+// and check for the LI_FF_PEN_TOUCH_EVENTS flag.
+#define LI_TOOL_TYPE_UNKNOWN 0x00
+#define LI_TOOL_TYPE_PEN     0x01
+#define LI_TOOL_TYPE_ERASER  0x02
+#define LI_PEN_BUTTON_PRIMARY   0x01
+#define LI_PEN_BUTTON_SECONDARY 0x02
+#define LI_PEN_BUTTON_TERTIARY  0x04
+#define LI_TILT_UNKNOWN 0xFF
+int LiSendPenEvent(uint8_t eventType, uint8_t toolType, uint8_t penButtons,
+                   float x, float y, float pressureOrDistance,
+                   float contactAreaMajor, float contactAreaMinor,
+                   uint16_t rotation, uint8_t tilt);
+
 // This function queues a mouse button event to be sent to the remote server.
 #define BUTTON_ACTION_PRESS 0x07
 #define BUTTON_ACTION_RELEASE 0x08
@@ -546,6 +685,8 @@ int LiSendMouseMoveAsMousePositionEvent(short deltaX, short deltaY, short refere
 int LiSendMouseButtonEvent(char action, int button);
 
 // This function queues a keyboard event to be sent to the remote server.
+// Key codes are Win32 Virtual Key (VK) codes and interpreted as keys on
+// a US English layout.
 #define KEY_ACTION_DOWN 0x03
 #define KEY_ACTION_UP 0x04
 #define MODIFIER_SHIFT 0x01
@@ -553,6 +694,12 @@ int LiSendMouseButtonEvent(char action, int button);
 #define MODIFIER_ALT 0x04
 #define MODIFIER_META 0x08
 int LiSendKeyboardEvent(short keyCode, char keyAction, char modifiers);
+
+// Similar to LiSendKeyboardEvent() but allows the client to inform the host that
+// the keycode was not mapped to a standard US English scancode and should be
+// interpreted as-is. This is a Sunshine protocol extension.
+#define SS_KBE_FLAG_NON_NORMALIZED 0x01
+int LiSendKeyboardEvent2(short keyCode, char keyAction, char modifiers, char flags);
 
 // This function queues an UTF-8 encoded text to be sent to the remote server.
 int LiSendUtf8TextEvent(const char *text, unsigned int length);
@@ -574,19 +721,97 @@ int LiSendUtf8TextEvent(const char *text, unsigned int length);
 #define RS_CLK_FLAG  0x0080
 #define SPECIAL_FLAG 0x0400
 
+// Extended buttons (Sunshine only)
+#define PADDLE1_FLAG  0x010000
+#define PADDLE2_FLAG  0x020000
+#define PADDLE3_FLAG  0x040000
+#define PADDLE4_FLAG  0x080000
+#define TOUCHPAD_FLAG 0x100000 // Touchpad buttons on Sony controllers
+#define MISC_FLAG     0x200000 // Share/Mic/Capture/Mute buttons on various controllers
+
 // This function queues a controller event to be sent to the remote server. It will
 // be seen by the computer as the first controller.
-int LiSendControllerEvent(short buttonFlags, unsigned char leftTrigger, unsigned char rightTrigger,
+int LiSendControllerEvent(int buttonFlags, unsigned char leftTrigger, unsigned char rightTrigger,
     short leftStickX, short leftStickY, short rightStickX, short rightStickY);
 
 // This function queues a controller event to be sent to the remote server. The controllerNumber
 // parameter is a zero-based index of which controller this event corresponds to. The largest legal
-// controller number is 3 (for a total of 4 controllers, the Xinput maximum). On generation 3 servers (GFE 2.1.x),
-// these will be sent as controller 0 regardless of the controllerNumber parameter. The activeGamepadMask
-// parameter is a bitfield with bits set for each controller present up to a maximum of 4 (0xF).
+// controller number is 3 for GFE hosts and 15 for Sunshine hosts. On generation 3 servers (GFE 2.1.x),
+// these will be sent as controller 0 regardless of the controllerNumber parameter.
+//
+// The activeGamepadMask parameter is a bitfield with bits set for each controller present.
+// On GFE, activeGamepadMask is limited to a maximum of 4 bits (0xF).
+// On Sunshine, it is limited to 16 bits (0xFFFF).
+//
+// To indicate arrival of a gamepad, you may send an empty event with the controller number
+// set to the new controller and the bit of the new controller set in the active gamepad mask.
+// However, you should prefer LiSendControllerArrivalEvent() instead of this function for
+// that purpose, because it allows the host to make a better choice of emulated controller.
+//
+// To indicate removal of a gamepad, send an empty event with the controller number set to the
+// removed controller and the bit of the removed controller cleared in the active gamepad mask.
 int LiSendMultiControllerEvent(short controllerNumber, short activeGamepadMask,
-    short buttonFlags, unsigned char leftTrigger, unsigned char rightTrigger,
+    int buttonFlags, unsigned char leftTrigger, unsigned char rightTrigger,
     short leftStickX, short leftStickY, short rightStickX, short rightStickY);
+
+// This function provides a method of informing the host of the available buttons and capabilities
+// on a new controller. This is the recommended approach for indicating the arrival of a new controller.
+//
+// This can allow the host to make better decisions about what type of controller to emulate and what
+// capabilities to advertise to the OS on the virtual controller.
+//
+// If controller arrival events are unsupported by the host, this will fall back to indicating
+// arrival via LiSendMultiControllerEvent().
+#define LI_CTYPE_UNKNOWN  0x00
+#define LI_CTYPE_XBOX     0x01
+#define LI_CTYPE_PS       0x02
+#define LI_CTYPE_NINTENDO 0x03
+#define LI_CCAP_ANALOG_TRIGGERS 0x01 // Reports values between 0x00 and 0xFF for trigger axes
+#define LI_CCAP_RUMBLE          0x02 // Can rumble in response to ConnListenerRumble() callback
+#define LI_CCAP_TRIGGER_RUMBLE  0x04 // Can rumble triggers in response to ConnListenerRumbleTriggers() callback
+#define LI_CCAP_TOUCHPAD        0x08 // Reports touchpad events via LiSendControllerTouchEvent()
+#define LI_CCAP_ACCEL           0x10 // Can report accelerometer events via LiSendControllerMotionEvent()
+#define LI_CCAP_GYRO            0x20 // Can report gyroscope events via LiSendControllerMotionEvent()
+#define LI_CCAP_BATTERY_STATE   0x40 // Reports battery state via LiSendControllerBatteryEvent()
+#define LI_CCAP_RGB_LED         0x80 // Can set RGB LED state via ConnListenerSetControllerLED()
+int LiSendControllerArrivalEvent(uint8_t controllerNumber, uint16_t activeGamepadMask, uint8_t type,
+                                 uint32_t supportedButtonFlags, uint16_t capabilities);
+
+// This function is similar to LiSendTouchEvent(), but the touch events are associated with a
+// touchpad device present on a game controller instead of a touchscreen.
+//
+// If unsupported by the host, this will return LI_ERR_UNSUPPORTED and the caller should consider
+// using this touch input to simulate trackpad input.
+//
+// To determine if LiSendControllerTouchEvent() is supported without calling it, call LiGetHostFeatureFlags()
+// and check for the LI_FF_CONTROLLER_TOUCH_EVENTS flag.
+int LiSendControllerTouchEvent(uint8_t controllerNumber, uint8_t eventType, uint32_t pointerId, float x, float y, float pressure);
+
+// This function allows clients to send controller-associated motion events to a supported host.
+//
+// For power and performance reasons, motion sensors should not be enabled unless the host has
+// explicitly asked for motion event reports via ConnListenerSetMotionEventState().
+//
+// LI_MOTION_TYPE_ACCEL should report data in m/s^2 (inclusive of gravitational acceleration).
+// LI_MOTION_TYPE_GYRO should report data in deg/s.
+//
+// The x/y/z axis assignments follow SDL's convention documented here:
+// https://github.com/libsdl-org/SDL/blob/96720f335002bef62115e39327940df454d78f6c/include/SDL3/SDL_sensor.h#L80-L124
+#define LI_MOTION_TYPE_ACCEL 0x01
+#define LI_MOTION_TYPE_GYRO  0x02
+int LiSendControllerMotionEvent(uint8_t controllerNumber, uint8_t motionType, float x, float y, float z);
+
+// This function allows clients to send controller battery state to a supported host. If the
+// host can adjust battery state on the emulated controller, it can use this information to
+// make the virtual controller match the physical controller on the client.
+#define LI_BATTERY_STATE_UNKNOWN      0x00
+#define LI_BATTERY_STATE_NOT_PRESENT  0x01
+#define LI_BATTERY_STATE_DISCHARGING  0x02
+#define LI_BATTERY_STATE_CHARGING     0x03
+#define LI_BATTERY_STATE_NOT_CHARGING 0x04 // Connected to power but not charging
+#define LI_BATTERY_STATE_FULL         0x05
+#define LI_BATTERY_PERCENTAGE_UNKNOWN 0xFF
+int LiSendControllerBatteryEvent(uint8_t controllerNumber, uint8_t batteryState, uint8_t batteryPercentage);
 
 // This function queues a vertical scroll event to the remote server.
 // The number of "clicks" is multiplied by WHEEL_DELTA (120) before
@@ -598,6 +823,12 @@ int LiSendScrollEvent(signed char scrollClicks);
 // smaller than 120 units for devices that support "high resolution"
 // scrolling (Apple Trackpads, Microsoft Precision Touchpads, etc.).
 int LiSendHighResScrollEvent(short scrollAmount);
+
+// These functions send horizontal scroll events to the host which are
+// analogous to LiSendScrollEvent() and LiSendHighResScrollEvent().
+// This is a Sunshine protocol extension.
+int LiSendHScrollEvent(signed char scrollClicks);
+int LiSendHighResHScrollEvent(short scrollAmount);
 
 // This function returns a time in milliseconds with an implementation-defined epoch.
 uint64_t LiGetMillis(void);
@@ -691,12 +922,45 @@ void LiCompleteVideoFrame(VIDEO_FRAME_HANDLE handle, int drStatus);
 // See ConnListenerSetHdrMode() for more details.
 bool LiGetCurrentHostDisplayHdrMode(void);
 
+typedef struct _SS_HDR_METADATA {
+    // RGB order
+    struct {
+        uint16_t x; // Normalized to 50,000
+        uint16_t y; // Normalized to 50,000
+    } displayPrimaries[3];
+
+    struct {
+        uint16_t x; // Normalized to 50,000
+        uint16_t y; // Normalized to 50,000
+    } whitePoint;
+
+    uint16_t maxDisplayLuminance; // Nits
+    uint16_t minDisplayLuminance; // 1/10000th of a nit
+
+    // These are content-specific values which may not be available for all hosts.
+    uint16_t maxContentLightLevel; // Nits
+    uint16_t maxFrameAverageLightLevel; // Nits
+
+    // These are display-specific values which may not be available for all hosts.
+    uint16_t maxFullFrameLuminance; // Nits
+} SS_HDR_METADATA, *PSS_HDR_METADATA;
+
+// This function populates the provided mastering metadata struct with the HDR metadata
+// from the host PC's monitor and content (if available). It is only valid to call this
+// function when HDR mode is active on the host. This is a Sunshine protocol extension.
+bool LiGetHdrMetadata(PSS_HDR_METADATA metadata);
+
 // This function requests an IDR frame from the host. Typically this is done using DR_NEED_IDR, but clients
 // processing frames asynchronously may need to reset their decoder state even after returning DR_OK for
 // the prior frame. Rather than wait for a new frame and return DR_NEED_IDR for that one, they can just
 // call this API instead. Note that this function does not guarantee that the *next* frame will be an IDR
 // frame, just that an IDR frame will arrive soon.
 void LiRequestIdrFrame(void);
+
+// This function returns any extended feature flags supported by the host.
+#define LI_FF_PEN_TOUCH_EVENTS        0x01 // LiSendTouchEvent()/LiSendPenEvent() supported
+#define LI_FF_CONTROLLER_TOUCH_EVENTS 0x02 // LiSendControllerTouchEvent() supported
+uint32_t LiGetHostFeatureFlags(void);
 
 #ifdef __cplusplus
 }

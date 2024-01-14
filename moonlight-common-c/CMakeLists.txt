@@ -5,6 +5,7 @@ project(moonlight-common-c LANGUAGES C)
 set(CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
 
 option(USE_MBEDTLS "Use MbedTLS instead of OpenSSL" OFF)
+option(CODE_ANALYSIS "Run code analysis during compilation" OFF)
 
 SET(CMAKE_C_STANDARD 11)
 
@@ -39,6 +40,9 @@ elseif(MINGW)
   target_link_libraries(moonlight-common-c PRIVATE -lws2_32 -lwinmm)
 else()
   target_compile_options(moonlight-common-c PRIVATE -Wall -Wextra -Wno-unused-parameter -Werror)
+  if (CODE_ANALYSIS AND CMAKE_C_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(moonlight-common-c PRIVATE -fanalyzer)
+  endif()
 endif()
 
 if (USE_MBEDTLS)

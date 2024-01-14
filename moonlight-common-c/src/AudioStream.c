@@ -25,11 +25,6 @@ static uint8_t opusHeaderByte;
 
 #define MAX_PACKET_SIZE 1400
 
-// This is much larger than we should typically have buffered, but
-// it needs to be. We need a cushion in case our thread gets blocked
-// for longer than normal.
-#define RTP_RECV_BUFFER (64 * 1024)
-
 typedef struct _QUEUE_AUDIO_PACKET_HEADER {
     LINKED_BLOCKING_QUEUE_ENTRY lentry;
     int size;
@@ -41,8 +36,7 @@ typedef struct _QUEUED_AUDIO_PACKET {
 } QUEUED_AUDIO_PACKET, *PQUEUED_AUDIO_PACKET;
 
 static void AudioPingThreadProc(void* context) {
-    // Ping in ASCII
-    char pingData[] = { 0x50, 0x49, 0x4E, 0x47 };
+    char legacyPingData[] = { 0x50, 0x49, 0x4E, 0x47 };
     LC_SOCKADDR saddr;
 
     LC_ASSERT(AudioPortNumber != 0);
@@ -50,19 +44,20 @@ static void AudioPingThreadProc(void* context) {
     memcpy(&saddr, &RemoteAddr, sizeof(saddr));
     SET_PORT(&saddr, AudioPortNumber);
 
-    // Send PING every 500 milliseconds
+    // We do not check for errors here. Socket errors will be handled
+    // on the read-side in ReceiveThreadProc(). This avoids potential
+    // issues related to receiving ICMP port unreachable messages due
+    // to sending a packet prior to the host PC binding to that port.
+    int pingCount = 0;
     while (!PltIsThreadInterrupted(&udpPingThread)) {
-        // We do not check for errors here. Socket errors will be handled
-        // on the read-side in ReceiveThreadProc(). This avoids potential
-        // issues related to receiving ICMP port unreachable messages due
-        // to sending a packet prior to the host PC binding to that port.
-        sendto(rtpSocket, pingData, sizeof(pingData), 0, (struct sockaddr*)&saddr, RemoteAddrLen);
+        if (AudioPingPayload.payload[0] != 0) {
+            pingCount++;
+            AudioPingPayload.sequenceNumber = BE32(pingCount);
 
-        if (firstReceiveTime == 0 && isSocketReadable(rtpSocket)) {
-            // Remember the time when we got our first incoming audio packet.
-            // We will need to adjust for the delay between this event and
-            // when the real receive thread is ready to avoid falling behind.
-            firstReceiveTime = PltGetMillis();
+            sendto(rtpSocket, (char*)&AudioPingPayload, sizeof(AudioPingPayload), 0, (struct sockaddr*)&saddr, AddrLen);
+        }
+        else {
+            sendto(rtpSocket, legacyPingData, sizeof(legacyPingData), 0, (struct sockaddr*)&saddr, AddrLen);
         }
 
         PltSleepMsInterruptible(&udpPingThread, 500);
@@ -86,13 +81,6 @@ int initializeAudioStream(void) {
     memcpy(&avRiKeyId, StreamConfig.remoteInputAesIv, sizeof(avRiKeyId));
     avRiKeyId = BE32(avRiKeyId);
 
-    // For GFE 3.22 compatibility, we must start the audio ping thread before the RTSP handshake.
-    // It will not reply to our RTSP PLAY request until the audio ping has been received.
-    rtpSocket = bindUdpSocket(RemoteAddr.ss_family, RTP_RECV_BUFFER);
-    if (rtpSocket == INVALID_SOCKET) {
-        return LastSocketFail();
-    }
-
     return 0;
 }
 
@@ -102,6 +90,13 @@ int initializeAudioStream(void) {
 int notifyAudioPortNegotiationComplete(void) {
     LC_ASSERT(!pingThreadStarted);
     LC_ASSERT(AudioPortNumber != 0);
+
+    // For GFE 3.22 compatibility, we must start the audio ping thread before the RTSP handshake.
+    // It will not reply to our RTSP PLAY request until the audio ping has been received.
+    rtpSocket = bindUdpSocket(RemoteAddr.ss_family, &LocalAddr, AddrLen, 0);
+    if (rtpSocket == INVALID_SOCKET) {
+        return LastSocketFail();
+    }
 
     // We may receive audio before our threads are started, but that's okay. We'll
     // drop the first 1 second of audio packets to catch up with the backlog.
@@ -202,21 +197,22 @@ static void decodeInputData(PQUEUED_AUDIO_PACKET packet) {
                                (unsigned char*)(rtp + 1), dataLength,
                                decryptedOpusData, &dataLength)) {
             Limelog("Failed to decrypt audio packet (sequence number: %u)\n", rtp->sequenceNumber);
-            LC_ASSERT(false);
+            LC_ASSERT_VT(false);
             return;
         }
 
 #ifdef LC_DEBUG
         if (opusHeaderByte == INVALID_OPUS_HEADER) {
             opusHeaderByte = decryptedOpusData[0];
-            LC_ASSERT(opusHeaderByte != INVALID_OPUS_HEADER);
+            LC_ASSERT_VT(opusHeaderByte != INVALID_OPUS_HEADER);
         }
         else {
             // Opus header should stay constant for the entire stream.
             // If it doesn't, it may indicate that the RtpAudioQueue
             // incorrectly recovered a data shard or the decryption
-            // of the audio packet failed.
-            LC_ASSERT(decryptedOpusData[0] == opusHeaderByte);
+            // of the audio packet failed. Sunshine violates this for
+            // surround sound in some cases, so just ignore it.
+            LC_ASSERT_VT(decryptedOpusData[0] == opusHeaderByte || IS_SUNSHINE());
         }
 #endif
 
@@ -226,13 +222,13 @@ static void decodeInputData(PQUEUED_AUDIO_PACKET packet) {
 #ifdef LC_DEBUG
         if (opusHeaderByte == INVALID_OPUS_HEADER) {
             opusHeaderByte = ((uint8_t*)(rtp + 1))[0];
-            LC_ASSERT(opusHeaderByte != INVALID_OPUS_HEADER);
+            LC_ASSERT_VT(opusHeaderByte != INVALID_OPUS_HEADER);
         }
         else {
             // Opus header should stay constant for the entire stream.
             // If it doesn't, it may indicate that the RtpAudioQueue
             // incorrectly recovered a data shard.
-            LC_ASSERT(((uint8_t*)(rtp + 1))[0] == opusHeaderByte);
+            LC_ASSERT_VT(((uint8_t*)(rtp + 1))[0] == opusHeaderByte);
         }
 #endif
 

@@ -1,3 +1,8 @@
+#ifdef _WIN32
+// Don't warn for fopen() usage
+#define _CRT_SECURE_NO_WARNINGS 1
+#endif
+
 #include "Limelight-internal.h"
 
 static FILE* videoFile;

@@ -9,7 +9,8 @@ static int terminationCallbackErrorCode;
 // Common globals
 char* RemoteAddrString;
 struct sockaddr_storage RemoteAddr;
-SOCKADDR_LEN RemoteAddrLen;
+struct sockaddr_storage LocalAddr;
+SOCKADDR_LEN AddrLen;
 int AppVersionQuad[4];
 STREAM_CONFIGURATION StreamConfig;
 CONNECTION_LISTENER_CALLBACKS ListenerCallbacks;
@@ -29,6 +30,9 @@ uint16_t RtspPortNumber;
 uint16_t ControlPortNumber;
 uint16_t AudioPortNumber;
 uint16_t VideoPortNumber;
+SS_PING AudioPingPayload;
+SS_PING VideoPingPayload;
+uint32_t SunshineFeatureFlags;
 
 // Connection stages
 static const char* stageNames[STAGE_MAX] = {
@@ -206,12 +210,29 @@ int LiStartConnection(PSERVER_INFORMATION serverInfo, PSTREAM_CONFIGURATION stre
 
     if (drCallbacks != NULL && (drCallbacks->capabilities & CAPABILITY_PULL_RENDERER) && drCallbacks->submitDecodeUnit) {
         Limelog("CAPABILITY_PULL_RENDERER cannot be set with a submitDecodeUnit callback\n");
+        LC_ASSERT(false);
         err = -1;
         goto Cleanup;
     }
 
     if (drCallbacks != NULL && (drCallbacks->capabilities & CAPABILITY_PULL_RENDERER) && (drCallbacks->capabilities & CAPABILITY_DIRECT_SUBMIT)) {
         Limelog("CAPABILITY_PULL_RENDERER and CAPABILITY_DIRECT_SUBMIT cannot be set together\n");
+        LC_ASSERT(false);
+        err = -1;
+        goto Cleanup;
+    }
+
+    if (serverInfo->serverCodecModeSupport == 0) {
+        Limelog("serverCodecModeSupport field in SERVER_INFORMATION must be set!\n");
+        LC_ASSERT(false);
+        err = -1;
+        goto Cleanup;
+    }
+
+    // Extract the appversion from the supplied string
+    if (extractVersionQuadFromString(serverInfo->serverInfoAppVersion,
+                                     AppVersionQuad) < 0) {
+        Limelog("Invalid appversion string: %s\n", serverInfo->serverInfoAppVersion);
         err = -1;
         goto Cleanup;
     }
@@ -234,6 +255,7 @@ int LiStartConnection(PSERVER_INFORMATION serverInfo, PSTREAM_CONFIGURATION stre
     memcpy(&ListenerCallbacks, clCallbacks, sizeof(ListenerCallbacks));
     ListenerCallbacks.connectionTerminated = ClInternalConnectionTerminated;
 
+    memset(&LocalAddr, 0, sizeof(LocalAddr));
     NegotiatedVideoFormat = 0;
     memcpy(&StreamConfig, streamConfig, sizeof(StreamConfig));
     OriginalVideoBitrate = streamConfig->bitrate;
@@ -285,7 +307,7 @@ int LiStartConnection(PSERVER_INFORMATION serverInfo, PSTREAM_CONFIGURATION stre
     }
 
     // Dimensions over 4096 are only supported with HEVC on NVENC
-    if (!StreamConfig.supportsHevc &&
+    if (!(StreamConfig.supportedVideoFormats & ~VIDEO_FORMAT_MASK_H264) &&
             (StreamConfig.width > 4096 || StreamConfig.height > 4096)) {
         Limelog("WARNING: Streaming at resolutions above 4K using H.264 will likely fail! Trying anyway!\n");
     }
@@ -299,19 +321,12 @@ int LiStartConnection(PSERVER_INFORMATION serverInfo, PSTREAM_CONFIGURATION stre
     // resolutions will work and which won't, but we can at least exclude
     // 4K from RFI to avoid significant persistent artifacts after frame loss.
     if (StreamConfig.width == 3840 && StreamConfig.height == 2160 &&
-            (VideoCallbacks.capabilities & CAPABILITY_REFERENCE_FRAME_INVALIDATION_AVC)) {
-        Limelog("Disabling reference frame invalidation for 4K streaming\n");
+            (VideoCallbacks.capabilities & CAPABILITY_REFERENCE_FRAME_INVALIDATION_AVC) &&
+            !IS_SUNSHINE()) {
+        Limelog("Disabling reference frame invalidation for 4K streaming with GFE\n");
         VideoCallbacks.capabilities &= ~CAPABILITY_REFERENCE_FRAME_INVALIDATION_AVC;
     }
     
-    // Extract the appversion from the supplied string
-    if (extractVersionQuadFromString(serverInfo->serverInfoAppVersion,
-                                     AppVersionQuad) < 0) {
-        Limelog("Invalid appversion string: %s\n", serverInfo->serverInfoAppVersion);
-        err = -1;
-        goto Cleanup;
-    }
-
     Limelog("Initializing platform...");
     ListenerCallbacks.stageStarting(STAGE_PLATFORM_INIT);
     err = initializePlatform();
@@ -331,13 +346,13 @@ int LiStartConnection(PSERVER_INFORMATION serverInfo, PSTREAM_CONFIGURATION stre
     if (RtspPortNumber != 48010) {
         // If we have an alternate RTSP port, use that as our test port. The host probably
         // isn't listening on 47989 or 47984 anyway, since they're using alternate ports.
-        err = resolveHostName(serverInfo->address, AF_UNSPEC, RtspPortNumber, &RemoteAddr, &RemoteAddrLen);
+        err = resolveHostName(serverInfo->address, AF_UNSPEC, RtspPortNumber, &RemoteAddr, &AddrLen);
         if (err != 0) {
             // Sleep for a second and try again. It's possible that we've attempt to connect
             // before the host has gotten around to listening on the RTSP port. Give it some
             // time before retrying.
             PltSleepMs(1000);
-            err = resolveHostName(serverInfo->address, AF_UNSPEC, RtspPortNumber, &RemoteAddr, &RemoteAddrLen);
+            err = resolveHostName(serverInfo->address, AF_UNSPEC, RtspPortNumber, &RemoteAddr, &AddrLen);
         }
     }
     else {
@@ -347,12 +362,12 @@ int LiStartConnection(PSERVER_INFORMATION serverInfo, PSTREAM_CONFIGURATION stre
         // TCP 48010 is a last resort because:
         // a) it's not always listening and there's a race between listen() on the host and our connect()
         // b) it's not used at all by certain host versions which perform RTSP over ENet
-        err = resolveHostName(serverInfo->address, AF_UNSPEC, 47984, &RemoteAddr, &RemoteAddrLen);
+        err = resolveHostName(serverInfo->address, AF_UNSPEC, 47984, &RemoteAddr, &AddrLen);
         if (err != 0) {
-            err = resolveHostName(serverInfo->address, AF_UNSPEC, 47989, &RemoteAddr, &RemoteAddrLen);
+            err = resolveHostName(serverInfo->address, AF_UNSPEC, 47989, &RemoteAddr, &AddrLen);
         }
         if (err != 0) {
-            err = resolveHostName(serverInfo->address, AF_UNSPEC, 48010, &RemoteAddr, &RemoteAddrLen);
+            err = resolveHostName(serverInfo->address, AF_UNSPEC, 48010, &RemoteAddr, &AddrLen);
         }
     }
     if (err != 0) {

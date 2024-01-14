@@ -7,19 +7,26 @@
 #define ENET_BUILDING_LIB 1
 #include "enet/enet.h"
 #include <windows.h>
+#include <Mswsock.h>
 #ifndef HAS_QOS_FLOWID
 typedef UINT32 QOS_FLOWID;
 #endif
 #ifndef HAS_PQOS_FLOWID
 typedef UINT32 *PQOS_FLOWID;
 #endif
-#include <mmsystem.h>
 #include <qos2.h>
 #ifndef QOS_NON_ADAPTIVE_FLOW
 #define QOS_NON_ADAPTIVE_FLOW 0x00000002
 #endif
 
 static enet_uint32 timeBase = 0;
+
+#if !(defined(WINAPI_FAMILY) && WINAPI_FAMILY == WINAPI_FAMILY_APP)
+# define HAS_QWAVE
+#endif
+
+#ifdef HAS_QWAVE
+
 static HANDLE qosHandle = INVALID_HANDLE_VALUE;
 static QOS_FLOWID qosFlowId;
 static BOOL qosAddedFlow;
@@ -29,6 +36,11 @@ static HMODULE QwaveLibraryHandle;
 BOOL (WINAPI *pfnQOSCreateHandle)(PQOS_VERSION Version, PHANDLE QOSHandle);
 BOOL (WINAPI *pfnQOSCloseHandle)(HANDLE QOSHandle);
 BOOL (WINAPI *pfnQOSAddSocketToFlow)(HANDLE QOSHandle, SOCKET Socket, PSOCKADDR DestAddr, QOS_TRAFFIC_TYPE TrafficType, DWORD Flags, PQOS_FLOWID FlowId);
+
+#endif
+
+LPFN_WSARECVMSG pfnWSARecvMsg;
+
 
 int
 enet_initialize (void)
@@ -47,8 +59,7 @@ enet_initialize (void)
        return -1;
     }
 
-    timeBeginPeriod (1);
-
+#ifdef HAS_QWAVE
     QwaveLibraryHandle = LoadLibraryA("qwave.dll");
     if (QwaveLibraryHandle != NULL) {
         pfnQOSCreateHandle = (void*)GetProcAddress(QwaveLibraryHandle, "QOSCreateHandle");
@@ -64,13 +75,14 @@ enet_initialize (void)
             QwaveLibraryHandle = NULL;
         }
     }
-
+#endif
     return 0;
 }
 
 void
 enet_deinitialize (void)
 {
+#ifdef HAS_QWAVE
     qosAddedFlow = FALSE;
     qosFlowId = 0;
 
@@ -88,28 +100,26 @@ enet_deinitialize (void)
         FreeLibrary(QwaveLibraryHandle);
         QwaveLibraryHandle = NULL;
     }
-
-    timeEndPeriod (1);
-
+#endif
     WSACleanup ();
 }
 
 enet_uint32
 enet_host_random_seed (void)
 {
-    return (enet_uint32) timeGetTime ();
+    return (enet_uint32) GetTickCount ();
 }
 
 enet_uint32
 enet_time_get (void)
 {
-    return (enet_uint32) timeGetTime () - timeBase;
+    return (enet_uint32) GetTickCount () - timeBase;
 }
 
 void
 enet_time_set (enet_uint32 newTimeBase)
 {
-    timeBase = (enet_uint32) timeGetTime () - newTimeBase;
+    timeBase = (enet_uint32) GetTickCount () - newTimeBase;
 }
 
 int
@@ -231,7 +241,46 @@ enet_socket_listen (ENetSocket socket, int backlog)
 ENetSocket
 enet_socket_create (int af, ENetSocketType type)
 {
-    return socket (af, type == ENET_SOCKET_TYPE_DATAGRAM ? SOCK_DGRAM : SOCK_STREAM, 0);
+    SOCKET sock = socket (af, type == ENET_SOCKET_TYPE_DATAGRAM ? SOCK_DGRAM : SOCK_STREAM, 0);
+    if (sock == INVALID_SOCKET)
+        return INVALID_SOCKET;
+
+    DWORD bytesReturned;
+    GUID wsaRecvMsgGuid = WSAID_WSARECVMSG;
+    if (WSAIoctl(sock, SIO_GET_EXTENSION_FUNCTION_POINTER, &wsaRecvMsgGuid, sizeof(wsaRecvMsgGuid),
+                 &pfnWSARecvMsg, sizeof(pfnWSARecvMsg), &bytesReturned, NULL, NULL) == SOCKET_ERROR) {
+        closesocket(sock);
+        return INVALID_SOCKET;
+    }
+
+    BOOL val;
+
+    // Enable dual-stack operation for IPv6 sockets
+    if (af == AF_INET6) {
+        val = FALSE;
+        if (setsockopt(sock, IPPROTO_IPV6, IPV6_V6ONLY, (char*)&val, sizeof(val)) == SOCKET_ERROR) {
+            closesocket(sock);
+            return INVALID_SOCKET;
+        }
+    }
+
+    // Enable returning local address info for IPv4 and dual-stack sockets
+    val = TRUE;
+    if (setsockopt(sock, IPPROTO_IP, IP_PKTINFO, (char*)&val, sizeof(val)) == SOCKET_ERROR) {
+        closesocket(sock);
+        return INVALID_SOCKET;
+    }
+
+    // Enable returning local address info for IPv6 and dual-stack sockets
+    if (af == AF_INET6) {
+        val = TRUE;
+        if (setsockopt(sock, IPPROTO_IPV6, IPV6_PKTINFO, (char*)&val, sizeof(val)) == SOCKET_ERROR) {
+            closesocket(sock);
+            return INVALID_SOCKET;
+        }
+    }
+
+    return sock;
 }
 
 int
@@ -273,6 +322,7 @@ enet_socket_set_option (ENetSocket socket, ENetSocketOption option, int value)
 
         case ENET_SOCKOPT_QOS:
         {
+#ifdef HAS_QWAVE
             if (value)
             {
                 QOS_VERSION qosVersion;
@@ -292,10 +342,14 @@ enet_socket_set_option (ENetSocket socket, ENetSocketOption option, int value)
 
             qosAddedFlow = FALSE;
             qosFlowId = 0;
-
+#endif
             result = 0;
             break;
         }
+
+        case ENET_SOCKOPT_TTL:
+            result = setsockopt (socket, IPPROTO_IP, IP_TTL, (char *) & value, sizeof (int));
+            break;
 
         default:
             break;
@@ -312,6 +366,11 @@ enet_socket_get_option (ENetSocket socket, ENetSocketOption option, int * value)
         case ENET_SOCKOPT_ERROR:
             len = sizeof(int);
             result = getsockopt (socket, SOL_SOCKET, SO_ERROR, (char *) value, & len);
+            break;
+
+        case ENET_SOCKOPT_TTL:
+            len = sizeof(int);
+            result = getsockopt (socket, IPPROTO_IP, IP_TTL, (char *) value, & len);
             break;
 
         default:
@@ -365,18 +424,21 @@ enet_socket_destroy (ENetSocket socket)
 
 int
 enet_socket_send (ENetSocket socket,
-                  const ENetAddress * address,
+                  const ENetAddress * peerAddress,
+                  const ENetAddress * localAddress,
                   const ENetBuffer * buffers,
                   size_t bufferCount)
 {
     DWORD sentLength;
-
+    WSAMSG msg = { 0 };
+    char controlBufData[1024];
+#ifdef HAS_QWAVE
     if (!qosAddedFlow && qosHandle != INVALID_HANDLE_VALUE)
     {
         qosFlowId = 0; // Must be initialized to 0
         pfnQOSAddSocketToFlow(qosHandle,
                               socket,
-                              (struct sockaddr *)&address->address,
+                              (struct sockaddr *)&peerAddress->address,
                               QOSTrafficTypeControl,
                               QOS_NON_ADAPTIVE_FLOW,
                               &qosFlowId);
@@ -384,16 +446,55 @@ enet_socket_send (ENetSocket socket,
         // Even if we failed, don't try again
         qosAddedFlow = TRUE;
     }
+#endif
 
-    if (WSASendTo (socket, 
-                   (LPWSABUF) buffers,
-                   (DWORD) bufferCount,
-                   & sentLength,
-                   0,
-                   address != NULL ? (struct sockaddr *) & address -> address : NULL,
-                   address != NULL ? address -> addressLength : 0,
-                   NULL,
-                   NULL) == SOCKET_ERROR)
+    msg.name = peerAddress != NULL ? (struct sockaddr *) & peerAddress -> address : NULL;
+    msg.namelen = peerAddress != NULL ? peerAddress -> addressLength : 0;
+    msg.lpBuffers = (LPWSABUF) buffers;
+    msg.dwBufferCount = (DWORD) bufferCount;
+
+    // We always send traffic from the same local address as we last received
+    // from this peer to ensure it correctly recognizes our responses as
+    // coming from the expected host.
+    if (localAddress != NULL) {
+        if (localAddress->address.ss_family == AF_INET) {
+            IN_PKTINFO pktInfo;
+
+            pktInfo.ipi_addr = ((PSOCKADDR_IN)&localAddress->address)->sin_addr;
+            pktInfo.ipi_ifindex = 0; // Unspecified
+
+            msg.Control.buf = controlBufData;
+            msg.Control.len = WSA_CMSG_SPACE(sizeof(pktInfo));
+
+            PWSACMSGHDR chdr = WSA_CMSG_FIRSTHDR(&msg);
+            chdr->cmsg_level = IPPROTO_IP;
+            chdr->cmsg_type = IP_PKTINFO;
+            chdr->cmsg_len = WSA_CMSG_LEN(sizeof(pktInfo));
+            memcpy(WSA_CMSG_DATA(chdr), &pktInfo, sizeof(pktInfo));
+        }
+        else if (localAddress->address.ss_family == AF_INET6) {
+            IN6_PKTINFO pktInfo;
+
+            pktInfo.ipi6_addr = ((PSOCKADDR_IN6)&localAddress->address)->sin6_addr;
+            pktInfo.ipi6_ifindex = 0; // Unspecified
+
+            msg.Control.buf = controlBufData;
+            msg.Control.len = WSA_CMSG_SPACE(sizeof(pktInfo));
+
+            PWSACMSGHDR chdr = WSA_CMSG_FIRSTHDR(&msg);
+            chdr->cmsg_level = IPPROTO_IPV6;
+            chdr->cmsg_type = IPV6_PKTINFO;
+            chdr->cmsg_len = WSA_CMSG_LEN(sizeof(pktInfo));
+            memcpy(WSA_CMSG_DATA(chdr), &pktInfo, sizeof(pktInfo));
+        }
+    }
+
+    if (WSASendMsg (socket,
+                    & msg,
+                    0,
+                    & sentLength,
+                    NULL,
+                    NULL) == SOCKET_ERROR)
     {
        if (WSAGetLastError () == WSAEWOULDBLOCK)
          return 0;
@@ -406,39 +507,69 @@ enet_socket_send (ENetSocket socket,
 
 int
 enet_socket_receive (ENetSocket socket,
-                     ENetAddress * address,
+                     ENetAddress * peerAddress,
+                     ENetAddress * localAddress,
                      ENetBuffer * buffers,
                      size_t bufferCount)
 {
-    DWORD flags = 0,
-          recvLength;
-    
-    if (address != NULL)
-      address -> addressLength = sizeof (address -> address);
+    DWORD recvLength;
+    WSAMSG msg = { 0 };
+    char controlBufData[1024];
 
-    if (WSARecvFrom (socket,
-                     (LPWSABUF) buffers,
-                     (DWORD) bufferCount,
-                     & recvLength,
-                     & flags,
-                     address != NULL ? (struct sockaddr *) & address -> address : NULL,
-                     address != NULL ? & address -> addressLength : NULL,
-                     NULL,
-                     NULL) == SOCKET_ERROR)
+    msg.name = peerAddress != NULL ? (struct sockaddr *) & peerAddress -> address : NULL;
+    msg.namelen = peerAddress != NULL ? sizeof (peerAddress -> address) : 0;
+    msg.lpBuffers = (LPWSABUF) buffers;
+    msg.dwBufferCount = (DWORD) bufferCount;
+    msg.Control.buf = controlBufData;
+    msg.Control.len = sizeof(controlBufData);
+
+    if (pfnWSARecvMsg (socket,
+                       & msg,
+                       & recvLength,
+                       NULL,
+                       NULL) == SOCKET_ERROR)
     {
        switch (WSAGetLastError ())
        {
        case WSAEWOULDBLOCK:
        case WSAECONNRESET:
           return 0;
+       case WSAEMSGSIZE:
+          return -2;
        }
 
        return -1;
     }
 
-    if (flags & MSG_PARTIAL)
-      return -1;
+    if (msg.dwFlags & MSG_PARTIAL)
+      return -2;
 
+    // Retrieve the local address that this traffic was received on
+    // to ensure we respond from the correct address/interface.
+    if (localAddress != NULL) {
+        for (PWSACMSGHDR chdr = WSA_CMSG_FIRSTHDR(&msg); chdr != NULL; chdr = WSA_CMSG_NXTHDR(&msg, chdr)) {
+            if (chdr->cmsg_level == IPPROTO_IP && chdr->cmsg_type == IP_PKTINFO) {
+                PSOCKADDR_IN localAddr = (PSOCKADDR_IN)&localAddress->address;
+
+                localAddr->sin_family = AF_INET;
+                localAddr->sin_addr = ((IN_PKTINFO*)WSA_CMSG_DATA(chdr))->ipi_addr;
+
+                localAddress->addressLength = sizeof(*localAddr);
+                break;
+            }
+            else if (chdr->cmsg_level == IPPROTO_IPV6 && chdr->cmsg_type == IPV6_PKTINFO) {
+                PSOCKADDR_IN6 localAddr = (PSOCKADDR_IN6)&localAddress->address;
+
+                localAddr->sin6_family = AF_INET6;
+                localAddr->sin6_addr = ((IN6_PKTINFO*)WSA_CMSG_DATA(chdr))->ipi6_addr;
+
+                localAddress->addressLength = sizeof(*localAddr);
+                break;
+            }
+        }
+    }
+
+    peerAddress->addressLength = msg.namelen;
     return (int) recvLength;
 }
 
