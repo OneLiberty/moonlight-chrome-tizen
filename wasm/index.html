@@ -25,7 +25,7 @@
         <div class="mdl-layout-spacer"></div>
         <!-- Navigation -->
         <nav class="mdl-navigation">
-          <div class="nav-menu-parent">
+      	  <div class="nav-menu-parent">
             <div id="resolutionMenu">
               <button id="selectResolution" data-value="1920:1080" class="mdl-button mdl-js-button">1080p</button>
             </div>
@@ -104,6 +104,19 @@
             </label>
             <div id="hdrTooltip" class="mdl-tooltip" for="hdrBtn">Enable HDR</div>
           </div>
+
+	  <div class="nav-menu-parent">
+            <div id="codecVideoMenu">
+              <button id="selectCodecVideo" data-value=0x0001 class="mdl-button mdl-js-button">H264</button>
+            </div>
+            <ul class="codecVideoMenu mdl-menu mdl-menu--bottom-right mdl-js-menu mdl-js-ripple-effect" for="selectCodecVideo">
+              <li class="mdl-menu__item" data-value=0x0001>H264</li>
+              <li class="mdl-menu__item" data-value=0x0100>HEVC</li>
+			  <li class="mdl-menu__item" data-value=0x0200>HEVC Main10</li>
+            </ul>
+            <div id="codecVideoMenuTooltip" class="mdl-tooltip" for="codecVideoMenu">Video Codec</div>
+          </div>
+
 
           <button type="button" class="mdl-button mdl-js-button mdl-button--raised mdl-button--colored mdl-js-ripple-effect" id="quitCurrentApp" aria-label="Quit current app">
             <i class="material-icons">remove_circle_outline</i>Quit Current App

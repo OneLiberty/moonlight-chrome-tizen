@@ -161,7 +161,7 @@ int height, int redrawRate, void* context, int drFlags) {
   {
     const char *mimetype = "video/mp4";
     if(videoFormat & VIDEO_FORMAT_H265_MAIN10) {
-      mimetype = "video/mp4; codecs=\"hev1.2.6.L153.B0\"";  // h265 main10 mimeType	//FHEN : hev1.2.4.L153.B0 => hev1.2.6.L153.B0
+      mimetype = "video/mp4; codecs=\"hev1.2.4.L153.B0\"";  // h265 main10 mimeType	: hev1.2.4.L153.B0 can be updated to hev1.2.6.L153.B0 depending on TV capabilities
     } else if(videoFormat & VIDEO_FORMAT_H265) {
       mimetype = "video/mp4; codecs=\"hev1.1.6.L93.B0\"";  // h265 main mimeType
     } else if(videoFormat & VIDEO_FORMAT_H264) {

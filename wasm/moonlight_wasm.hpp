@@ -61,7 +61,7 @@ public:
   MessageResult StartStream(std::string host, std::string width,
   std::string height, std::string fps, std::string bitrate, std::string rikey,
   std::string rikeyid, std::string appversion, std::string gfeversion, bool framePacing,
-  bool audioSync, std::string rtspurl, bool hdrEnabled);
+  bool audioSync, std::string rtspurl, bool hdrEnabled, std::string codecVideo);
   MessageResult StopStream();
 
   void STUN(int callbackId);
@@ -192,6 +192,7 @@ public:
   bool m_HdrEnabled;
   STREAM_CONFIGURATION m_StreamConfig;
   bool m_Running;
+  int m_supportedVideoFormats;
 
   pthread_t m_ConnectionThread;
   pthread_t m_InputThread;
@@ -242,7 +243,7 @@ void openUrl(int callbackId, std::string url, emscripten::val ppk, bool binaryRe
 
 MessageResult startStream(std::string host, std::string width, std::string height, std::string fps,
 std::string bitrate, std::string rikey, std::string rikeyid, std::string appversion,
-std::string gfeversion, bool framePacing, bool audioSync,  std::string rtspurl, bool hdrEnabled);
+std::string gfeversion, bool framePacing, bool audioSync,  std::string rtspurl, bool hdrEnabled, std::string codecVideo);
 MessageResult stopStream();
 
 void stun(int callbackId);
