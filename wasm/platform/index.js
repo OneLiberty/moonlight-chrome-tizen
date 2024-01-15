@@ -811,6 +811,7 @@ function startGame(host, appID) {
             /*host.gfeVersion*/"",
             framePacingEnabled,
             audioSyncEnabled,
+            $root.find('sessionUrl0').text().trim(),
             hdrEnabled
           ]);
         }, function(failedResumeApp) {
@@ -851,7 +852,8 @@ function startGame(host, appID) {
           "",
           framePacingEnabled,
           audioSyncEnabled,
-          hdrEnabled
+          $root.find('sessionUrl0').text().trim(),
+	  hdrEnabled
         ]);
       }, function(failedLaunchApp) {
         console.error('%c[index.js, launchApp]', 'color: green;', 'Failed to launch app width id: ' + appID + '\nReturned error was: ' + failedLaunchApp);

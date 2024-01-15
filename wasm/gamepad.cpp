@@ -107,8 +107,8 @@ void MoonlightInstance::PollGamepads() {
       * std::numeric_limits<short>::max();
     const auto rightStickY = -gamepad.axis[GamepadAxis::RightY]
       * std::numeric_limits<short>::max();
-
-    if (buttonFlags == STOP_STREAM_BUTTONS_FLAGS) {
+    
+   if (buttonFlags == STOP_STREAM_BUTTONS_FLAGS) {
       PostToJs(std::string("stopping stream, button flags is ") + std::to_string(buttonFlags));
       stopStream();
       return;
