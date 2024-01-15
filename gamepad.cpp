@@ -1,133 +1,124 @@
-#include "moonlight.hpp"
+#include "moonlight_wasm.hpp"
 
-#include "ppapi/c/ppb_gamepad.h"
-
-#include <Limelight.h>
-
+#include <iostream>
+#include <array>
+#include <utility>
 #include <sstream>
 
-static const unsigned short k_StandardGamepadButtonMapping[] = {
+#include <Limelight.h>
+#include <emscripten/emscripten.h>
+
+// Define a combination of buttons on the Xbox controller to stop streaming
+const short STOP_STREAM_BUTTONS_FLAGS = LB_FLAG | RB_FLAG | BACK_FLAG | PLAY_FLAG;
+
+// For explanation on ordering, see: https://www.w3.org/TR/gamepad/#remapping
+// Enumeration for gamepad axes
+enum GamepadAxis {
+  LeftX = 0,
+  LeftY = 1,
+  RightX = 2,
+  RightY = 3,
+};
+
+// Enumeration for gamepad buttons
+enum GamepadButton {
+  A, B, X, Y,
+  LeftShoulder, RightShoulder,
+  LeftTrigger, RightTrigger,
+  Back, Play,
+  LeftStick, RightStick,
+  Up, Down, Left, Right,
+  Special,
+  Count,
+};
+
+// Function to create a mask for active gamepads
+static short GetActiveGamepadMask(int numGamepads) {
+  short result = 0;
+  for (int i = 0; i < numGamepads; ++i) {
+    result |= (1 << i);
+  }
+  return result;
+}
+
+// Function to map gamepad buttons to flags
+static short GetButtonFlags(const EmscriptenGamepadEvent& gamepad) {
+  // Triggers are considered analog buttons in Emscripten API, however they
+  // need to be passed in separate arguments for Limelight (it even lacks flags
+  // for them).
+
+  // Define button mappings
+  static const int buttonMasks[] {
     A_FLAG, B_FLAG, X_FLAG, Y_FLAG,
     LB_FLAG, RB_FLAG,
-    0, 0, // Triggers
+    0 /* LEFT_TRIGGER */, 0 /* RIGHT_TRIGGER */,
     BACK_FLAG, PLAY_FLAG,
     LS_CLK_FLAG, RS_CLK_FLAG,
     UP_FLAG, DOWN_FLAG, LEFT_FLAG, RIGHT_FLAG,
-    SPECIAL_FLAG
-};
+    SPECIAL_FLAG,
+  };
 
-static const unsigned int k_StandardGamepadTriggerButtonIndexes[] = {
-    6, 7
-};
+  static const int buttonMasksSize = static_cast<int>(sizeof(buttonMasks) / sizeof(buttonMasks[0]));
 
-static short GetActiveGamepadMask(PP_GamepadsSampleData& gamepadData) {
-    short controllerIndex = 0;
-    short activeGamepadMask = 0;
-
-    for (unsigned int p = 0; p < gamepadData.length; p++) {
-        PP_GamepadSampleData& padData = gamepadData.items[p];
-
-        // See logic in getConnectedGamepadMask() (utils.js)
-        // These must stay in sync!
-
-        if (!padData.connected) {
-            // Not connected
-            continue;
-        }
-        
-        if (padData.timestamp == 0) {
-            // On some platforms, Chrome returns "connected" pads that
-            // really aren't, so timestamp stays at zero. To work around this,
-            // we'll only count gamepads that have a non-zero timestamp in our
-            // controller index.
-            continue;
-        }
-
-        activeGamepadMask |= (1 << controllerIndex);
-        controllerIndex++;
+  short result = 0;
+  for (int i = 0; i < gamepad.numButtons && i < buttonMasksSize; ++i) {
+    if (gamepad.digitalButton[i] == EM_TRUE) {
+      result |= buttonMasks[i];
     }
-
-    return activeGamepadMask;
+  }
+  return result;
 }
 
+// Function to poll gamepad input
 void MoonlightInstance::PollGamepads() {
-    PP_GamepadsSampleData gamepadData;
-    short controllerIndex = 0;
-    short activeGamepadMask;
-    
-    m_GamepadApi->Sample(pp_instance(), &gamepadData);
+  if (emscripten_sample_gamepad_data() != EMSCRIPTEN_RESULT_SUCCESS) {
+    std::cerr << "Sample gamepad data failed!\n";
+    return;
+  }
 
-    // We must determine which gamepads are connected before reporting
-    // any events.
-    activeGamepadMask = GetActiveGamepadMask(gamepadData);
+  const auto numGamepads = emscripten_get_num_gamepads();
+  if (numGamepads == EMSCRIPTEN_RESULT_NOT_SUPPORTED) {
+    std::cerr << "Get num gamepads failed!\n";
+    return;
+  }
 
-    for (unsigned int p = 0; p < gamepadData.length; p++) {
-        PP_GamepadSampleData& padData = gamepadData.items[p];
-        
-        if (!padData.connected) {
-            // Not connected
-            continue;
-        }
-        
-        if (padData.timestamp == 0) {
-            // On some platforms, Chrome returns "connected" pads that
-            // really aren't, so timestamp stays at zero. To work around this,
-            // we'll only count gamepads that have a non-zero timestamp in our
-            // controller index.
-            continue;
-        }
-        
-        if (padData.timestamp == m_LastPadTimestamps[p]) {
-            // No change from last poll, but this controller is still valid
-            // so we skip this index.
-            controllerIndex++;
-            continue;
-        }
-        
-        m_LastPadTimestamps[p] = padData.timestamp;
-        
-        short buttonFlags = 0;
-        unsigned char leftTrigger = 0, rightTrigger = 0;
-        short leftStickX = 0, leftStickY = 0;
-        short rightStickX = 0, rightStickY = 0;
-        
-        // Handle buttons and triggers
-        for (unsigned int i = 0; i < padData.buttons_length; i++) {
-            if (i >= sizeof(k_StandardGamepadButtonMapping) / sizeof(k_StandardGamepadButtonMapping[0])) {
-                // Ignore unmapped buttons
-                break;
-            }
-            
-            // Handle triggers first
-            if (i == k_StandardGamepadTriggerButtonIndexes[0]) {
-                leftTrigger = padData.buttons[i] * 0xFF;
-            }
-            else if (i == k_StandardGamepadTriggerButtonIndexes[1]) {
-                rightTrigger = padData.buttons[i] * 0xFF;
-            }
-            // Now normal buttons
-            else if (padData.buttons[i] > 0.5f) {
-                buttonFlags |= k_StandardGamepadButtonMapping[i];
-            }
-        }
-        
-        // Get left stick values
-        if (padData.axes_length >= 2) {
-            leftStickX = padData.axes[0] * 0x7FFF;
-            leftStickY = -padData.axes[1] * 0x7FFF;
-        }
-        
-        // Get right stick values
-        if (padData.axes_length >= 4) {
-            rightStickX = padData.axes[2] * 0x7FFF;
-            rightStickY = -padData.axes[3] * 0x7FFF;
-        }
-        
-        LiSendMultiControllerEvent(controllerIndex, activeGamepadMask,
-                                   buttonFlags, leftTrigger, rightTrigger,
-                                   leftStickX, leftStickY, rightStickX, rightStickY);
-        controllerIndex++;
+  // Create a mask for active gamepads
+  const auto activeGamepadMask = GetActiveGamepadMask(numGamepads);
+
+  // Iterate through connected gamepads and process their input
+  for (int gamepadID = 0; gamepadID < numGamepads; ++gamepadID) {
+    emscripten_sample_gamepad_data();
+    EmscriptenGamepadEvent gamepad;
+    const auto result = emscripten_get_gamepad_status(gamepadID, &gamepad);
+    if (result != EMSCRIPTEN_RESULT_SUCCESS || !gamepad.connected) {
+      continue; /* Skip disconnected gamepads */
     }
+
+    const auto buttonFlags = GetButtonFlags(gamepad);
+    const auto leftTrigger = gamepad.analogButton[GamepadButton::LeftTrigger]
+      * std::numeric_limits<unsigned char>::max();
+    const auto rightTrigger = gamepad.analogButton[GamepadButton::RightTrigger]
+      * std::numeric_limits<unsigned char>::max();
+    const auto leftStickX = gamepad.axis[GamepadAxis::LeftX]
+      * std::numeric_limits<short>::max();
+    const auto leftStickY = -gamepad.axis[GamepadAxis::LeftY]
+      * std::numeric_limits<short>::max();
+    const auto rightStickX = gamepad.axis[GamepadAxis::RightX]
+      * std::numeric_limits<short>::max();
+    const auto rightStickY = -gamepad.axis[GamepadAxis::RightY]
+      * std::numeric_limits<short>::max();
+
+    if (buttonFlags == STOP_STREAM_BUTTONS_FLAGS) {
+      PostToJs(std::string("stopping stream, button flags is ") + std::to_string(buttonFlags));
+      stopStream();
+      return;
+    }
+
+    // Send gamepad input to the desired handler
+    LiSendMultiControllerEvent(
+      gamepadID, activeGamepadMask, buttonFlags, leftTrigger,
+      rightTrigger, leftStickX, leftStickY, rightStickX, rightStickY);
+  }
 }
 
 void MoonlightInstance::ClControllerRumble(unsigned short controllerNumber, unsigned short lowFreqMotor, unsigned short highFreqMotor)
@@ -137,6 +128,6 @@ void MoonlightInstance::ClControllerRumble(unsigned short controllerNumber, unsi
 
     std::ostringstream ss;
     ss << controllerNumber << "," << weakMagnitude << "," << strongMagnitude;
-    pp::Var response(std::string("controllerRumble: ") + ss.str());
-    g_Instance->PostMessage(response);
+
+    PostToJs(std::string("controllerRumble: ") + ss.str());
 }
