@@ -874,6 +874,8 @@ function playGameMode() {
   $("#main-content").addClass("fullscreen");
   $("#listener").addClass("fullscreen");
 
+  $("#nacl_module")[0].style.opacity = 0.0;	//FHEN
+
   if (runningOnChrome()) {
     chrome.app.window.current().fullscreen();
   }
