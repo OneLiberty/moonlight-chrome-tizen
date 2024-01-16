@@ -880,7 +880,7 @@ function playGameMode() {
   $("#main-content").addClass("fullscreen");
   $("#listener").addClass("fullscreen");
 
-  $("#nacl_module")[0].style.opacity = 0.0;
+  //$("#nacl_module")[0].style.opacity = 0.0; //Reverted the retrofit of the fix from moonlight-chrome
 
   if (runningOnChrome()) {
     chrome.app.window.current().fullscreen();
