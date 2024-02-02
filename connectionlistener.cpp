@@ -1,57 +1,58 @@
-#include "moonlight_wasm.hpp"
+#include "moonlight.hpp"
 
-#include <cstdarg>
-#include <cstring>
-#include <string>
+#include "ppapi/c/ppb_input_event.h"
 
-#include <emscripten.h>
-#include <emscripten/threading.h>
+#include "ppapi/cpp/input_event.h"
+#include "ppapi/cpp/mouse_lock.h"
 
 void MoonlightInstance::ClStageStarting(int stage) {
-  PostToJs(std::string("ProgressMsg: Starting ") + std::string(LiGetStageName(stage)) + std::string("..."));
+    pp::Var response(std::string("ProgressMsg: Starting ") + std::string(LiGetStageName(stage)) + std::string("..."));
+    g_Instance->PostMessage(response);
 }
 
 void MoonlightInstance::ClStageFailed(int stage, int errorCode) {
-  PostToJs(std::string("DialogMsg: ") + std::string(LiGetStageName(stage)) + std::string(" failed (error ") + std::to_string(errorCode) + std::string(")"));
+    pp::Var response(
+        std::string("DialogMsg: ") +
+        std::string(LiGetStageName(stage)) +
+        std::string(" failed (error ") +
+        std::to_string(errorCode) +
+        std::string(")"));
+    g_Instance->PostMessage(response);
 }
 
 void MoonlightInstance::ClConnectionStarted(void) {
-  emscripten_sync_run_in_main_runtime_thread(EM_FUNC_SIG_V, onConnectionStarted);
+    pp::Module::Get()->core()->CallOnMainThread(0,
+        g_Instance->m_CallbackFactory.NewCallback(&MoonlightInstance::OnConnectionStarted));
 }
 
 void MoonlightInstance::ClConnectionTerminated(int errorCode) {
-  // Teardown the connection
-  LiStopConnection();
-
-  emscripten_sync_run_in_main_runtime_thread(EM_FUNC_SIG_VI, onConnectionStopped, errorCode);
+    // Teardown the connection
+    LiStopConnection();
+    
+    pp::Module::Get()->core()->CallOnMainThread(0,
+        g_Instance->m_CallbackFactory.NewCallback(&MoonlightInstance::OnConnectionStopped), (uint32_t)errorCode);
 }
 
 void MoonlightInstance::ClDisplayMessage(const char* message) {
-  PostToJs(std::string("DialogMsg: ") + std::string(message));
+    pp::Var response(std::string("DialogMsg: ") + std::string(message));
+    g_Instance->PostMessage(response);
 }
 
 void MoonlightInstance::ClDisplayTransientMessage(const char* message) {
-  PostToJs(std::string("TransientMsg: ") + std::string(message));
-}
-
-void onConnectionStarted() {
-  g_Instance->OnConnectionStarted(0);
-}
-
-void onConnectionStopped(int errorCode) {
-  g_Instance->OnConnectionStopped(errorCode);
+    pp::Var response(std::string("TransientMsg: ") + std::string(message));
+    g_Instance->PostMessage(response);
 }
 
 void MoonlightInstance::ClLogMessage(const char* format, ...) {
-  va_list va;
-  va_start(va, format);
-  char buf[1000];
-  vsnprintf(buf, sizeof(buf), format, va);
-  va_end(va);
+    va_list va;
+    char message[1024];
 
-  // fprintf(stderr, ...) processes message in parts, so logs from different
-  // threads may interleave. Send whole message at once to minimize this.
-  emscripten_log(EM_LOG_CONSOLE, "%s", buf);
+    va_start(va, format);
+    vsnprintf(message, sizeof(message), format, va);
+    va_end(va);
+
+    pp::Var response(std::string("LogMsg: ") + std::string(message));
+    g_Instance->PostMessage(response);
 }
 
 CONNECTION_LISTENER_CALLBACKS MoonlightInstance::s_ClCallbacks = {
