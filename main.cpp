@@ -1,4 +1,4 @@
-#include "moonlight_wasm.hpp"
+#include "moonlight.hpp"
 
 #include <pthread.h>
 #include <stdio.h>
@@ -6,19 +6,14 @@
 #include <unistd.h>
 
 #include <pairing.h>
-#include <iostream>
 
-#include <emscripten.h>
-#include <emscripten/html5.h>
+#include "ppapi/cpp/input_event.h"
 
-#include <openssl/evp.h>
-#include <openssl/rand.h>
-
-#include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <arpa/inet.h>
 
-// Requests the NaCl module to connection to the server specified after the:
+// Requests the NaCl module to connection to the server specified after the :
 #define MSG_START_REQUEST "startRequest"
 // Requests the NaCl module stop streaming
 #define MSG_STOP_REQUEST "stopRequest"
@@ -29,342 +24,325 @@
 
 MoonlightInstance* g_Instance;
 
-MoonlightInstance::MoonlightInstance()
-    : m_OpusDecoder(NULL),
-      m_MouseLocked(false),
-      m_MouseLastPosX(-1),
-      m_MouseLastPosY(-1),
-      m_WaitingForAllModifiersUp(false),
-      m_AccumulatedTicks(0),
-      m_MouseDeltaX(0),
-      m_MouseDeltaY(0),
-      m_HttpThreadPoolSequence(0),
-      m_Dispatcher("Curl"),
-      m_Mutex(),
-      m_EmssStateChanged(),
-      m_EmssAudioStateChanged(),
-      m_EmssVideoStateChanged(),
-      m_EmssReadyState(EmssReadyState::kDetached),
-      m_AudioStarted(false),
-      m_VideoStarted(false),
-      m_AudioSessionId(0),
-      m_VideoSessionId(0),
-      m_MediaElement("nacl_module"),
-      m_Source(
-        samsung::wasm::ElementaryMediaStreamSource::LatencyMode::kUltraLow,
-        samsung::wasm::ElementaryMediaStreamSource::RenderingMode::kMediaElement),
-      m_SourceListener(this),
-      m_AudioTrackListener(this),
-      m_VideoTrackListener(this),
-      m_VideoTrack(),
-      m_AudioTrack() {
-  m_Dispatcher.start();
-  m_Source.SetListener(&m_SourceListener);
-}
+class MoonlightModule : public pp::Module {
+    public:
+        MoonlightModule() : pp::Module() {}
+        virtual ~MoonlightModule() {}
 
-MoonlightInstance::~MoonlightInstance() { m_Dispatcher.stop(); }
+        virtual pp::Instance* CreateInstance(PP_Instance instance) {
+            return new MoonlightInstance(instance);
+        }
+};
 
 void MoonlightInstance::OnConnectionStarted(uint32_t unused) {
-  // Tell the front end
-  PostToJs(std::string("Connection Established"));
+    // Tell the front end
+    pp::Var response("Connection Established");
+    PostMessage(response);
+    
+    // Start receiving input events
+    RequestInputEvents(PP_INPUTEVENT_CLASS_MOUSE | PP_INPUTEVENT_CLASS_WHEEL | PP_INPUTEVENT_CLASS_TOUCH);
+    
+    // Filtering is suboptimal but it ensures that we can pass keyboard events
+    // to the browser when mouse lock is disabled. This is neccessary for Esc
+    // to kick the app out of full-screen.
+    RequestFilteringInputEvents(PP_INPUTEVENT_CLASS_KEYBOARD);
 }
 
 void MoonlightInstance::OnConnectionStopped(uint32_t error) {
-  // Not running anymore
-  m_Running = false;
-
-  // Unlock the mouse
-  UnlockMouse();
-
-  // Notify the JS code that the stream has ended
-  PostToJs(std::string(MSG_STREAM_TERMINATED + std::to_string((int)error)));
+    // Not running anymore
+    m_Running = false;
+    
+    // Stop receiving input events
+    ClearInputEventRequest(PP_INPUTEVENT_CLASS_MOUSE |
+                           PP_INPUTEVENT_CLASS_WHEEL |
+                           PP_INPUTEVENT_CLASS_KEYBOARD |
+                           PP_INPUTEVENT_CLASS_TOUCH);
+    
+    // Unlock the mouse
+    UnlockMouseOrJustReleaseInput();
+    
+    // Notify the JS code that the stream has ended
+    pp::Var response(std::string(MSG_STREAM_TERMINATED) + std::to_string((int)error));
+    PostMessage(response);
 }
 
 void MoonlightInstance::StopConnection() {
-  pthread_t t;
-
-  // Stopping needs to happen in a separate thread to avoid a potential deadlock
-  // caused by us getting a callback to the main thread while inside
-  // LiStopConnection.
-  pthread_create(&t, NULL, MoonlightInstance::StopThreadFunc, NULL);
-
-  // We'll need to call the listener ourselves since our connection terminated
-  // callback won't be invoked for a manually requested termination.
-  OnConnectionStopped(0);
+    pthread_t t;
+    
+    // Stopping needs to happen in a separate thread to avoid a potential deadlock
+    // caused by us getting a callback to the main thread while inside LiStopConnection.
+    pthread_create(&t, NULL, MoonlightInstance::StopThreadFunc, NULL);
+    
+    // We'll need to call the listener ourselves since our connection terminated callback
+    // won't be invoked for a manually requested termination.
+    OnConnectionStopped(0);
 }
 
 void* MoonlightInstance::StopThreadFunc(void* context) {
-  // We must join the connection thread first, because LiStopConnection must
-  // not be invoked during LiStartConnection.
-  pthread_join(g_Instance->m_ConnectionThread, NULL);
+    // We must join the connection thread first, because LiStopConnection must
+    // not be invoked during LiStartConnection.
+    pthread_join(g_Instance->m_ConnectionThread, NULL);
 
-  // Force raise all modifier keys to avoid leaving them down after
-  // disconnecting
-  LiSendKeyboardEvent(0xA0, KEY_ACTION_UP, 0);
-  LiSendKeyboardEvent(0xA1, KEY_ACTION_UP, 0);
-  LiSendKeyboardEvent(0xA2, KEY_ACTION_UP, 0);
-  LiSendKeyboardEvent(0xA3, KEY_ACTION_UP, 0);
-  LiSendKeyboardEvent(0xA4, KEY_ACTION_UP, 0);
-  LiSendKeyboardEvent(0xA5, KEY_ACTION_UP, 0);
+    // Force raise all modifier keys to avoid leaving them down after disconnecting
+    LiSendKeyboardEvent(0xA0, KEY_ACTION_UP, 0);
+    LiSendKeyboardEvent(0xA1, KEY_ACTION_UP, 0);
+    LiSendKeyboardEvent(0xA2, KEY_ACTION_UP, 0);
+    LiSendKeyboardEvent(0xA3, KEY_ACTION_UP, 0);
+    LiSendKeyboardEvent(0xA4, KEY_ACTION_UP, 0);
+    LiSendKeyboardEvent(0xA5, KEY_ACTION_UP, 0);
 
-  // Not running anymore
-  g_Instance->m_Running = false;
+    // Not running anymore
+    g_Instance->m_Running = false;
 
-  // We also need to stop this thread after the connection thread, because it
-  // depends on being initialized there.
-  pthread_join(g_Instance->m_InputThread, NULL);
+    // We also need to stop this thread after the connection thread, because it depends
+    // on being initialized there.
+    pthread_join(g_Instance->m_InputThread, NULL);
 
-  // Stop the connection
-  LiStopConnection();
-  return NULL;
+    // Stop the connection
+    LiStopConnection();
+    return NULL;
 }
 
 void* MoonlightInstance::InputThreadFunc(void* context) {
-  MoonlightInstance* me = (MoonlightInstance*)context;
+    MoonlightInstance* me = (MoonlightInstance*)context;
 
-  while (me->m_Running) {
-    me->PollGamepads();
-    me->ReportMouseMovement();
-
-    // Poll every 5 ms
-    usleep(5 * 1000);
-  }
-
-  return NULL;
+    while (me->m_Running) {
+        me->PollGamepads();
+        me->ReportMouseMovement();
+        
+        // Poll every 5 ms
+        usleep(5 * 1000);
+    }
+    
+    return NULL;
 }
 
 void* MoonlightInstance::ConnectionThreadFunc(void* context) {
-  MoonlightInstance* me = (MoonlightInstance*)context;
-  int err;
-  SERVER_INFORMATION serverInfo;
-
-  // Post a status update before we begin
-  PostToJs(std::string("Starting connection to ") + me->m_Host);
-
-  LiInitializeServerInformation(&serverInfo);
-  serverInfo.address = me->m_Host.c_str();
-  serverInfo.serverInfoAppVersion = me->m_AppVersion.c_str();
-  serverInfo.serverInfoGfeVersion = me->m_GfeVersion.c_str();
-  serverInfo.rtspSessionUrl = me->m_RtspUrl.c_str();
-  serverInfo.serverCodecModeSupport = SCM_HEVC_MAIN10; //FHEN 
-
-  err = LiStartConnection(&serverInfo, &me->m_StreamConfig,
-  &MoonlightInstance::s_ClCallbacks, &MoonlightInstance::s_DrCallbacks,
-  &MoonlightInstance::s_ArCallbacks, NULL, 0, NULL, 0);
-  if (err != 0) {
-    // Notify the JS code that the stream has ended
-    // NB: We pass error code 0 here to avoid triggering a "Connection
-    // terminated" warning message.
-    PostToJs(MSG_STREAM_TERMINATED + std::to_string(0));
+    MoonlightInstance* me = (MoonlightInstance*)context;
+    int err;
+    SERVER_INFORMATION serverInfo;
+    
+    // Post a status update before we begin
+    pp::Var response("Starting connection to " + me->m_Host);
+    me->PostMessage(response);
+    
+    LiInitializeServerInformation(&serverInfo);
+    serverInfo.address = me->m_Host.c_str();
+    serverInfo.serverInfoAppVersion = me->m_AppVersion.c_str();
+    serverInfo.serverInfoGfeVersion = me->m_GfeVersion.c_str();
+    serverInfo.rtspSessionUrl = me->m_RtspUrl.c_str();
+    
+    err = LiStartConnection(&serverInfo,
+                            &me->m_StreamConfig,
+                            &MoonlightInstance::s_ClCallbacks,
+                            &MoonlightInstance::s_DrCallbacks,
+                            &MoonlightInstance::s_ArCallbacks,
+                            NULL, 0,
+                            NULL, 0);
+    if (err != 0) {
+        // Notify the JS code that the stream has ended
+        // NB: We pass error code 0 here to avoid triggering a "Connection terminated"
+        // warning message.
+        pp::Var response(MSG_STREAM_TERMINATED + std::to_string(0));
+        me->PostMessage(response);
+        return NULL;
+    }
+    
+    // Set running state before starting connection-specific threads
+    me->m_Running = true;
+    
+    pthread_create(&me->m_InputThread, NULL, MoonlightInstance::InputThreadFunc, me);
+    
     return NULL;
-  }
-
-  // Set running state before starting connection-specific threads
-  me->m_Running = true;
-
-  pthread_create(&me->m_InputThread, NULL, MoonlightInstance::InputThreadFunc, me);
-
-  return NULL;
 }
 
-static void HexStringToBytes(const char* str, char* output) {
-  for (size_t i = 0; i < strlen(str); i += 2) {
-    sscanf(&str[i], "%2hhx", &output[i / 2]);
-  }
+// hook from javascript into the CPP code.
+void MoonlightInstance::HandleMessage(const pp::Var& var_message) {
+     // Ignore the message if it is not a string.
+    if (!var_message.is_dictionary())
+        return;
+    
+    pp::VarDictionary msg(var_message);
+    int32_t callbackId = msg.Get("callbackId").AsInt();
+    std::string method = msg.Get("method").AsString();
+    pp::VarArray params(msg.Get("params"));
+    
+    if (strcmp(method.c_str(), MSG_START_REQUEST) == 0) {
+        HandleStartStream(callbackId, params);
+    } else if (strcmp(method.c_str(), MSG_STOP_REQUEST) == 0) {
+        HandleStopStream(callbackId, params);
+    } else if (strcmp(method.c_str(), MSG_OPENURL) == 0) {
+        HandleOpenURL(callbackId, params);
+    } else if (strcmp(method.c_str(), "httpInit") == 0) {
+        NvHTTPInit(callbackId, params);
+    } else if (strcmp(method.c_str(), "makeCert") == 0) {
+        MakeCert(callbackId, params);
+    } else if (strcmp(method.c_str(), "pair") == 0) {
+        HandlePair(callbackId, params);
+    } else if (strcmp(method.c_str(), "STUN") == 0) {
+        HandleSTUN(callbackId, params);
+    } else {
+        pp::Var response("Unhandled message received: " + method);
+        PostMessage(response);
+    }
 }
 
-MessageResult MoonlightInstance::StartStream(
-std::string host, std::string width, std::string height, std::string fps,
-std::string bitrate, std::string rikey, std::string rikeyid,
-std::string appversion, std::string gfeversion, bool framePacing,
-bool audioSync, std::string rtspurl, bool hdrEnabled) {
-  PostToJs("Setting stream width to: " + width);
-  PostToJs("Setting stream height to: " + height);
-  PostToJs("Setting stream fps to: " + fps);
-  PostToJs("Setting stream host to: " + host);
-  PostToJs("Setting stream bitrate to: " + bitrate);
-  PostToJs("Setting rikey to: " + rikey);
-  PostToJs("Setting rikeyid to: " + rikeyid);
-  PostToJs("Setting appversion to: " + appversion);
-  PostToJs("Setting gfeversion to: " + gfeversion);
-  PostToJs("Setting frame pacing to: " + std::to_string(framePacing));
-  PostToJs("Setting audio syncing to: " + std::to_string(audioSync));
-  PostToJs("Setting HDR to:" + std::to_string(hdrEnabled));
-  PostToJs("Setting RTSP url to: " + rtspurl);
-
-  // Populate the stream configuration
-  LiInitializeStreamConfiguration(&m_StreamConfig);
-  m_StreamConfig.width = stoi(width);
-  m_StreamConfig.height = stoi(height);
-  m_StreamConfig.fps = stoi(fps);
-  m_StreamConfig.bitrate = stoi(bitrate);  // kilobits per second
-  m_StreamConfig.audioConfiguration = AUDIO_CONFIGURATION_STEREO;
-  m_StreamConfig.streamingRemotely = STREAM_CFG_AUTO;
-  m_StreamConfig.packetSize = 1392;
-  m_StreamConfig.supportsHevc = true;
-  m_StreamConfig.enableHdr = hdrEnabled;
-  m_StreamConfig.supportedVideoFormats = VIDEO_FORMAT_H265_MAIN10; //FHEN devrait être 264
-
-  // Load the rikey and rikeyid into the stream configuration
-  HexStringToBytes(rikey.c_str(), m_StreamConfig.remoteInputAesKey);
-  int rikeyiv = htonl(stoi(rikeyid));
-  memcpy(m_StreamConfig.remoteInputAesIv, &rikeyiv, sizeof(rikeyiv));
-
-  // Store the parameters from the start message
-  m_Host = host;
-  m_AppVersion = appversion;
-  m_GfeVersion = gfeversion;
-  m_FramePacingEnabled = framePacing;
-  m_AudioSyncEnabled = audioSync;
-  m_HdrEnabled = hdrEnabled;
-  m_RtspUrl = rtspurl;
-  // Initialize the rendering surface before starting the connection
-  if (InitializeRenderingSurface(m_StreamConfig.width, m_StreamConfig.height)) {
-    // Start the worker thread to establish the connection
-    pthread_create(&m_ConnectionThread, NULL, MoonlightInstance::ConnectionThreadFunc, this);
-  } else {
-    // Failed to initialize renderer
-    OnConnectionStopped(0);
-  }
-
-  return MessageResult::Resolve();
+static void hexStringToBytes(const char* str, char* output) {
+    for (int i = 0; i < strlen(str); i += 2) {
+        sscanf(&str[i], "%2hhx", &output[i / 2]);
+    }
 }
 
-MessageResult MoonlightInstance::StopStream() {
-  // Begin connection teardown
-  StopConnection();
+void MoonlightInstance::HandleStartStream(int32_t callbackId, pp::VarArray args) {
+    std::string host = args.Get(0).AsString();
+    std::string width = args.Get(1).AsString();
+    std::string height = args.Get(2).AsString();
+    std::string fps = args.Get(3).AsString();
+    std::string bitrate = args.Get(4).AsString();
+    std::string rikey = args.Get(5).AsString();
+    std::string rikeyid = args.Get(6).AsString();
+    std::string mouse_lock = args.Get(7).AsString();
+    std::string appversion = args.Get(8).AsString();
+    std::string gfeversion = args.Get(9).AsString();
+    std::string rtspurl = args.Get(10).AsString();
+    
+    pp::Var response("Setting stream width to: " + width);
+    PostMessage(response);
+    response = ("Setting stream height to: " + height);
+    PostMessage(response);
+    response = ("Setting stream fps to: " + fps);
+    PostMessage(response);
+    response = ("Setting stream host to: " + host);
+    PostMessage(response);
+    response = ("Setting stream bitrate to: " + bitrate);
+    PostMessage(response);
+    response = ("Setting rikey to: " + rikey);
+    PostMessage(response);
+    response = ("Setting rikeyid to: " + rikeyid);
+    PostMessage(response);
+    response = ("Setting appversion to: " + appversion);
+    PostMessage(response);
+    response = ("Setting gfeversion to: " + gfeversion);
+    PostMessage(response);
+    response = ("Setting mouse lock to: " + mouse_lock);
+    PostMessage(response);
+    response = ("Setting RTSP URL to: " + rtspurl);
+    PostMessage(response);
+    
+    // Populate the stream configuration
+    LiInitializeStreamConfiguration(&m_StreamConfig);
+    m_StreamConfig.width = stoi(width);
+    m_StreamConfig.height = stoi(height);
+    m_StreamConfig.fps = stoi(fps);
+    m_StreamConfig.bitrate = stoi(bitrate); // kilobits per second
+    m_StreamConfig.audioConfiguration = AUDIO_CONFIGURATION_STEREO;
+    m_StreamConfig.streamingRemotely = STREAM_CFG_AUTO;
+    m_StreamConfig.packetSize = 1392;
 
-  return MessageResult::Resolve();
+    // TODO: If/when video encryption is added, we'll probably want to
+    // limit that to devices that support AES instructions.
+    m_StreamConfig.encryptionFlags = ENCFLG_AUDIO;
+
+    // Load the rikey and rikeyid into the stream configuration
+    hexStringToBytes(rikey.c_str(), m_StreamConfig.remoteInputAesKey);
+    int rikeyiv = htonl(stoi(rikeyid));
+    memcpy(m_StreamConfig.remoteInputAesIv, &rikeyiv, sizeof(rikeyiv));
+
+    // Store the parameters from the start message
+    m_Host = host;
+    m_AppVersion = appversion;
+    m_GfeVersion = gfeversion;
+    m_RtspUrl = rtspurl;
+    m_MouseLockingFeatureEnabled = stoi(mouse_lock);
+    
+    // Initialize the rendering surface before starting the connection
+    if (InitializeRenderingSurface(m_StreamConfig.width, m_StreamConfig.height)) {
+        // Start the worker thread to establish the connection
+        pthread_create(&m_ConnectionThread, NULL, MoonlightInstance::ConnectionThreadFunc, this);
+    } else {
+        // Failed to initialize renderer
+        OnConnectionStopped(0);
+    }
+    
+    pp::VarDictionary ret;
+    ret.Set("callbackId", pp::Var(callbackId));
+    ret.Set("type", pp::Var("resolve"));
+    ret.Set("ret", pp::VarDictionary());
+    PostMessage(ret);
 }
 
-void MoonlightInstance::STUN_private(int callbackId) {
-  unsigned int wanAddr;
-  char addrStr[128] = {};
-
-  if (LiFindExternalAddressIP4("stun.moonlight-stream.org", 3478, &wanAddr) ==
-      0) {
-    inet_ntop(AF_INET, &wanAddr, addrStr, sizeof(addrStr));
-    PostPromiseMessage(callbackId, "resolve", std::string(addrStr, strlen(addrStr)));
-  } else {
-    PostPromiseMessage(callbackId, "resolve", "");
-  }
+void MoonlightInstance::HandleStopStream(int32_t callbackId, pp::VarArray args) {
+    // Begin connection teardown
+    StopConnection();
+    
+    pp::VarDictionary ret;
+    ret.Set("callbackId", pp::Var(callbackId));
+    ret.Set("type", pp::Var("resolve"));
+    ret.Set("ret", pp::VarDictionary());
+    PostMessage(ret);
 }
 
-void MoonlightInstance::STUN(int callbackId) {
-  m_Dispatcher.post_job(
-      std::bind(&MoonlightInstance::STUN_private, this, callbackId), false);
+void MoonlightInstance::HandleOpenURL(int32_t callbackId, pp::VarArray args) {
+    m_HttpThreadPool[m_HttpThreadPoolSequence++ % HTTP_HANDLER_THREADS]->message_loop().PostWork(
+        m_CallbackFactory.NewCallback(&MoonlightInstance::NvHTTPRequest, callbackId, args));
 }
 
-void MoonlightInstance::Pair_private(int callbackId, std::string serverMajorVersion,
-std::string address, std::string randomNumber) {
-  char* ppkstr;
-  int err = gs_pair(atoi(serverMajorVersion.c_str()), address.c_str(),
-                    randomNumber.c_str(), &ppkstr);
-
-  printf("pair address: %s result: %d\n", address.c_str(), err);
-  if (err == 0) {
-    free(ppkstr);
-    PostPromiseMessage(callbackId, "resolve", ppkstr);
-  } else {
-    PostPromiseMessage(callbackId, "reject", std::to_string(err));
-  }
+void MoonlightInstance::HandlePair(int32_t callbackId, pp::VarArray args) {
+     m_HttpThreadPool[m_HttpThreadPoolSequence++ % HTTP_HANDLER_THREADS]->message_loop().PostWork(
+         m_CallbackFactory.NewCallback(&MoonlightInstance::PairCallback, callbackId, args));
 }
 
-void MoonlightInstance::Pair(int callbackId, std::string serverMajorVersion,
-std::string address, std::string randomNumber) {
-  printf("%s address: %s\n", __func__, address.c_str());
-  m_Dispatcher.post_job(
-      std::bind(&MoonlightInstance::Pair_private, this, callbackId,
-                serverMajorVersion, address, randomNumber),
-      false);
+void MoonlightInstance::PairCallback(int32_t /*result*/, int32_t callbackId, pp::VarArray args) {
+    char* ppkstr;
+    int err = gs_pair(atoi(args.Get(0).AsString().c_str()), args.Get(1).AsString().c_str(), args.Get(2).AsString().c_str(), &ppkstr);
+    
+    pp::VarDictionary ret;
+    ret.Set("callbackId", pp::Var(callbackId));
+    if (err == 0) {
+        ret.Set("type", pp::Var("resolve"));
+        ret.Set("ret", pp::Var(ppkstr));
+        free(ppkstr);
+    }
+    else {
+        ret.Set("type", pp::Var("reject"));
+        ret.Set("ret", pp::Var(err));
+    }
+
+    PostMessage(ret);
 }
 
-bool MoonlightInstance::Init(uint32_t argc, const char* argn[], const char* argv[]) {
-  g_Instance = this;
-  return true;
+void MoonlightInstance::HandleSTUN(int32_t callbackId, pp::VarArray args) {
+     m_HttpThreadPool[m_HttpThreadPoolSequence++ % HTTP_HANDLER_THREADS]->message_loop().PostWork(
+         m_CallbackFactory.NewCallback(&MoonlightInstance::STUNCallback, callbackId, args));
 }
 
-int main(int argc, char** argv) {
-  g_Instance = new MoonlightInstance();
+void MoonlightInstance::STUNCallback(int32_t /*result*/, int32_t callbackId, pp::VarArray args) {
+    unsigned int wanAddr;
+    char addrStr[128] = {};
+    
+    pp::VarDictionary ret;
+    ret.Set("callbackId", pp::Var(callbackId));
+    ret.Set("type", pp::Var("resolve"));
 
-  emscripten_set_keyup_callback(kCanvasName, NULL, EM_TRUE, handleKeyUp);
-  emscripten_set_keydown_callback(kCanvasName, NULL, EM_TRUE, handleKeyDown);
-  emscripten_set_mousedown_callback(kCanvasName, NULL, EM_TRUE,
-                                    handleMouseDown);
-  emscripten_set_mouseup_callback(kCanvasName, NULL, EM_TRUE, handleMouseUp);
-  emscripten_set_mousemove_callback(kCanvasName, NULL, EM_TRUE,
-                                    handleMouseMove);
-  emscripten_set_wheel_callback(kCanvasName, NULL, EM_TRUE, handleWheel);
+    if (LiFindExternalAddressIP4("stun.moonlight-stream.org", 3478, &wanAddr) == 0) {
+        inet_ntop(AF_INET, &wanAddr, addrStr, sizeof(addrStr));
+        ret.Set("ret", pp::Var(addrStr));
+    } else {
+        ret.Set("ret", pp::Var());
+    }
 
-  // As we want to setup callbacks on DOM document and
-  // emscripten_set_pointerlock... calls use document.querySelector
-  // method, passing first argument to it, I've workaround for it
-  // When passing address 0x1, js glue code replace it with document object
-  static const char* kDocument = reinterpret_cast<const char*>(0x1);
-  emscripten_set_pointerlockchange_callback(kDocument, NULL, EM_TRUE, handlePointerLockChange);
-  emscripten_set_pointerlockerror_callback(kDocument, NULL, EM_TRUE, handlePointerLockError);
-  EM_ASM(Module['noExitRuntime'] = true);
-  unsigned char buffer[128];
-  int rc = RAND_bytes(buffer, sizeof(buffer));
-
-  if (rc != 1) {
-    std::cout << "RAND_bytes failed\n";
-  }
-  RAND_seed(buffer, 128);
-}
-MessageResult startStream(std::string host, std::string width,
-std::string height, std::string fps, std::string bitrate, std::string rikey,
-std::string rikeyid, std::string appversion, std::string gfeversion, bool framePacing,
-bool audioSync, std::string rtspurl, bool hdrEnabled) {
-  printf("%s host: %s w: %s h: %s\n", __func__, host.c_str(), width.c_str(), height.c_str());
-  return g_Instance->StartStream(host, width, height, fps, bitrate, rikey,
-  rikeyid, appversion, gfeversion, framePacing, audioSync, rtspurl, hdrEnabled);
+    PostMessage(ret);
 }
 
-MessageResult stopStream() { return g_Instance->StopStream(); }
-void stun(int callbackId) { g_Instance->STUN(callbackId); }
-
-void pair(int callbackId, std::string serverMajorVersion, std::string address, std::string randomNumber) {
-  g_Instance->Pair(callbackId, serverMajorVersion, address, randomNumber);
+bool MoonlightInstance::Init(uint32_t argc,
+                             const char* argn[],
+                             const char* argv[]) {
+    g_Instance = this;
+    return true;
 }
 
-void PostToJs(std::string msg) {
-  MAIN_THREAD_EM_ASM(
-      {
-        const msg = UTF8ToString($0);
-        handleMessage(msg);
-      },
-      msg.c_str());
+namespace pp {
+Module* CreateModule() {
+    return new MoonlightModule();
 }
-
-void PostPromiseMessage(int callbackId, const std::string& type, const std::string& response) {
-  MAIN_THREAD_EM_ASM(
-      {
-        const type = UTF8ToString($1);
-        const response = UTF8ToString($2);
-
-        handlePromiseMessage($0, type, response);
-      },
-      callbackId, type.c_str(), response.c_str());
-}
-void PostPromiseMessage(int callbackId, const std::string& type, const std::vector<uint8_t>& response) {
-  MAIN_THREAD_EM_ASM(
-      {
-        const type = UTF8ToString($1);
-        const response = HEAPU8.slice($2, $2 + $3);
-
-        handlePromiseMessage($0, type, response);
-      },
-      callbackId, type.c_str(), response.data(), response.size());
-}
-
-EMSCRIPTEN_BINDINGS(handle_message) {
-  emscripten::value_object<MessageResult>("MessageResult")
-    .field("type", &MessageResult::type)
-    .field("ret", &MessageResult::ret);
-
-  emscripten::function("startStream", &startStream);
-  emscripten::function("stopStream", &stopStream);
-  emscripten::function("stun", &stun);
-  emscripten::function("pair", &pair);
-}
+}  // namespace pp
