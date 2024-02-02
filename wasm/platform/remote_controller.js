@@ -48,5 +48,8 @@ function remoteControllerHandler(e) {
         case tvKey.KEY_VOLUME_MUTE:
             tizen.tvaudiocontrol.setMute();
             break;
-    }
+        case tvKey.KEY_RED:
+            Module.stopStream();
+            break;
+          }
 }

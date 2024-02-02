@@ -7,6 +7,9 @@ var isInGame = false; // flag indicating whether the game stream started
 var windowState = 'normal'; // chrome's windowState, possible values: 'normal' or 'fullscreen'
 var isDialogOpen = false; // track whether the dialog is open
 
+let repeatInterval;
+let repeatTimeout;
+
 // Called by the common.js module.
 function attachListeners() {
   changeUiModeForNaClLoad();
@@ -20,7 +23,6 @@ function attachListeners() {
   $('#framePacingSwitch').on('click', saveFramePacing);
   $('#audioSyncSwitch').on('click', saveAudioSync);
   $('#hdrSwitch').on('click', saveHdr);
-  $('.codecVideoMenu li').on('click', saveCodecVideo);
   $('#addHostCell').on('click', addHost);
   $('#backIcon').on('click', showHostsAndSettingsMode);
   $('#quitCurrentApp').on('click', stopGameWithConfirmation);
@@ -33,7 +35,6 @@ function attachListeners() {
         Navigation.push(view);
     });
   }
-  registerMenu('selectCodecVideo', Views.SelectCodecVideoMenu);
   registerMenu('selectResolution', Views.SelectResolutionMenu);
   registerMenu('selectFramerate', Views.SelectFramerateMenu);
   registerMenu('bandwidthMenu', Views.SelectBitrateMenu);
@@ -48,23 +49,39 @@ function attachListeners() {
     const pressed = e.detail.pressed;
     const key = e.detail.key;
 
-    if (!pressed)
-        return;
+    if (pressed) {
+        const gamepadMapping = {
+            0: () => Navigation.accept(),
+            1: () => Navigation.back(),
+            8: () => Navigation.selectBtn(),
+            9: () => Navigation.startBtn(),
+            12: () => startRepeatAction(() => Navigation.up()),
+            13: () => startRepeatAction(() => Navigation.down()),
+            14: () => Navigation.left(),
+            15: () => Navigation.right(),
+        };
 
-    const gamepadMapping = {
-      0: () => Navigation.accept(),
-      1: () => Navigation.back(),
-      8: () => Navigation.selectBtn(),
-      9: () => Navigation.startBtn(),
-      12: () => Navigation.up(),
-      13: () => Navigation.down(),
-      14: () => Navigation.left(),
-      15: () => Navigation.right(),
-    };
-    if (gamepadMapping[key]) {
-      gamepadMapping[key]();
+        if (gamepadMapping[key]) {
+            gamepadMapping[key]();
+        }
+    } else {
+        stopRepeatAction();
     }
   });
+}
+
+function startRepeatAction(actionFunction) {
+    clearTimeout(repeatTimeout);
+    actionFunction();
+    repeatTimeout = setTimeout(() => {
+        actionFunction();
+        repeatInterval = setInterval(actionFunction, 100);
+    }, 350);
+}
+
+function stopRepeatAction() {
+    clearInterval(repeatInterval);
+    clearTimeout(repeatTimeout);
 }
 
 function fullscreenChromeWindow() {
@@ -761,7 +778,6 @@ function startGame(host, appID) {
         return;
       }
 
-      var codecVideo = $('#selectCodecVideo').data('value').toString();
       var frameRate = $('#selectFramerate').data('value').toString();
       var optimize = $("#optimizeGamesSwitch").parent().hasClass('is-checked') ? 1 : 0;
       var streamWidth = $('#selectResolution').data('value').split(':')[0];
@@ -780,8 +796,7 @@ function startGame(host, appID) {
                   ":" + optimize +
                   ":" + framePacingEnabled,
                   ":" + audioSyncEnabled,
-                  ":" + hdrEnabled,
-                  ":" + codecVideo);
+                  ":" + hdrEnabled);
 
       var rikey = generateRemoteInputKey();
       var rikeyid = generateRemoteInputKeyId();
@@ -815,9 +830,7 @@ function startGame(host, appID) {
             /*host.gfeVersion*/"",
             framePacingEnabled,
             audioSyncEnabled,
-            $root.find('sessionUrl0').text().trim(),
-            hdrEnabled,
-			codecVideo
+            hdrEnabled
           ]);
         }, function(failedResumeApp) {
           console.error('%c[index.js, startGame]', 'color:green;', 'Failed to resume the app! Returned error was' + failedResumeApp);
@@ -857,9 +870,7 @@ function startGame(host, appID) {
           "",
           framePacingEnabled,
           audioSyncEnabled,
-          $root.find('sessionUrl0').text().trim(),
-		  hdrEnabled,
-		  codecVideo
+          hdrEnabled
         ]);
       }, function(failedLaunchApp) {
         console.error('%c[index.js, launchApp]', 'color: green;', 'Failed to launch app width id: ' + appID + '\nReturned error was: ' + failedLaunchApp);
@@ -879,8 +890,6 @@ function playGameMode() {
   $("#main-content").children().not("#listener, #loadingSpinner").hide();
   $("#main-content").addClass("fullscreen");
   $("#listener").addClass("fullscreen");
-
-  //$("#nacl_module")[0].style.opacity = 0.0; //Reverted the retrofit of the fix from moonlight-chrome
 
   if (runningOnChrome()) {
     chrome.app.window.current().fullscreen();
@@ -1173,13 +1182,6 @@ function saveHdr() {
   }, 100);
 }
 
-function saveCodecVideo() {
-  var chosenCodecVideo = $(this).data('value');
-  $('#selectCodecVideo').text($(this).text()).data('value', chosenCodecVideo);
-  storeData('codecVideo', chosenCodecVideo, null);
-  Navigation.pop();
-}
-
 function saveAudioSync() {
   setTimeout(function() {
     const chosenAudioSync = $("#audioSyncSwitch").parent().hasClass('is-checked');
@@ -1323,17 +1325,6 @@ function loadUserDataCb() {
       $('.framerateMenu li').each(function() {
         if ($(this).data('value') === previousValue.frameRate) {
           $('#selectFramerate').text($(this).text()).data('value', previousValue.frameRate);
-        }
-      });
-    }
-  });
-
-  console.log('load stored VideoCodec prefs');
-  getData('codecVideo', function(previousValue) {
-    if (previousValue.codecVideo != null) {
-      $('.codecVideoMenu li').each(function() {
-        if ($(this).data('value') === previousValue.codecVideo) {
-          $('#selectCodecVideo').text($(this).text()).data('value', previousValue.codecVideo);
         }
       });
     }
