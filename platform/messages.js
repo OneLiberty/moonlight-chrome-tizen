@@ -104,6 +104,7 @@ function handleMessage(msg) {
     snackbarLogLong(msg.replace('DialogMsg: ', ''));
   } else if (msg === 'displayVideo') {
     $("#listener").addClass("fullscreen");
+    //$("#nacl_module")[0].style.opacity = 1.0;	//Reverted the retrofit of the fix from moonlight-chrome
   } else if (msg.indexOf('controllerRumble: ') === 0) {
 	  const eventData = msg.split(' ')[1].split(',');
 	  const gamepadIdx = parseInt(eventData[0]);
