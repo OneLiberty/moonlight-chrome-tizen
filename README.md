@@ -1,3 +1,9 @@
+<p align=left>
+	<a href="https://discord.gg/zHafSd3bTw">
+		<img src="https://discordapp.com/api/guilds/1196915612522393651/widget.png?style=banner2" alt="Discord Banner 2"/> 
+	</a>
+</p>
+
 ## About
 [Moonlight for Tizen](https://moonlight-stream.org) is an open source client for NVIDIA GameStream and [Sunshine](https://github.com/LizardByte/Sunshine).
 
@@ -88,3 +94,4 @@ Also, if you liked the project or found it useful, don't forget to give the proj
 - Support files and Dockerfile have been adapted by [jellyfin](https://github.com/jellyfin/jellyfin-tizen) and [babagreensheep](https://github.com/babagreensheep/jellyfin-tizen-docker)
 - Dockerfile have been readapted by [pablojrl123](https://github.com/pablojrl123/moonlight-tizen-docker)
 - Some content files have been readapted by [ndriqimlahu](https://github.com/ndriqimlahu)
+- Thanks to [henry2fa](https://github.com/henryfa2) for the discord
