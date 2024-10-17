@@ -21,6 +21,7 @@ jobs:
       packages: write
     outputs:
       image_tag: ${{ steps.meta.outputs.tags }}
+      short_sha: ${{ github.sha }}
       # 
     steps:
       - name: Checkout repository
@@ -81,12 +82,14 @@ jobs:
         with:
           name: Moonlight.wgt
           path: Moonlight.wgt
+          retention-days: 0
 
       - name: Upload artifact MoonlightUSB.zip
         uses: actions/upload-artifact@v4
         with:
           name: MoonlightUSB.zip
           path: MoonlightUSB.zip
+          retention-days: 0
 
       - name: Create GitHub Release
         id: create_release
@@ -94,8 +97,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tag_name: ${{ github.sha }}
-          release_name: "Pre-release ${{ github.sha }}"
+          tag_name: ${{ github.ref_name }}-${{ needs.build-and-push-image.outputs.short_sha }}
+          release_name: "Pre-release ${{ github.ref_name }}-${{ needs.build-and-push-image.outputs.short_sha }}"
           draft: false
           prerelease: true
 
