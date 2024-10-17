@@ -48,8 +48,9 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
       - name: Run Docker container
         run: |
-          docker run -d --name temp_container ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-      
+          image_name=$(echo "${{ env.IMAGE_NAME }}" | tr '[:upper:]' '[:lower:]')
+          docker run -d --name temp_container ${{ env.REGISTRY }}/${image_name}
+          
       - name: Copy artifacts from Docker container
         run: |
           docker cp temp_container:/home/moonlight/Moonlight.wgt . && docker cp temp_container:/home/moonlight/MoonlightUSB.zip .
@@ -69,7 +70,7 @@ jobs:
         with:
           name: MoonlightUSB.zip
           path: MoonlightUSB.zip
-          
+
       - name: Create GitHub Release
         id: create_release
         uses: actions/create-release@v1
