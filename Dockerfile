@@ -1,4 +1,4 @@
-FROM ubuntu:22.04 as base
+FROM ubuntu:22.04 AS base
 
 ARG DEBIAN_FRONTEND=noninteractive
 ENV TZ=Etc/UTC
@@ -10,6 +10,9 @@ RUN apt-get update && apt-get install -y \
 	python2 \
 	unzip \
 	wget \
+	nodejs \
+	npm \
+	zip \
 	&& rm -rf /var/lib/apt/lists/*
 
 # Some of Samsung scripts make reference to python,
@@ -80,6 +83,13 @@ RUN echo \
 | expect
 
 RUN mv build/widget/Moonlight.wgt .
+
+# Clone and install wgt-to-usb
+RUN git clone https://github.com/fingerartur/wgt-to-usb.git
+RUN cd /home/moonlight/wgt-to-usb/ && npm install wgt-to-usb
+RUN npm exec wgt-to-usb /home/moonlight/Moonlight.wgt
+RUN cd /home/moonlight/userwidget && zip -r /home/moonlight/MoonlightUSB.zip .
+
 
 # remove unneed files
 RUN rm -rf \

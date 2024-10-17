@@ -46,4 +46,20 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+      
+      - name: Upload file to GitHub Release
+        uses: actions/upload-release-asset@v1
+        with:
+          upload_url: ${{ github.event.release.upload_url }}
+          asset_path: /home/moonlight/Moonlight.wgt
+          asset_name: Moonlight.wgt
+          asset_content_type: application/octet-stream
+
+      - name: Upload MoonlightUSB.zip to GitHub Release
+        uses: actions/upload-release-asset@v1
+        with:
+            upload_url: ${{ github.event.release.upload_url }}
+            asset_path: /home/moonlight/MoonlightUSB.zip
+            asset_name: MoonlightUSB.zip
+            asset_content_type: application/octet-stream
 
