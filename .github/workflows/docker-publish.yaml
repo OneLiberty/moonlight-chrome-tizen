@@ -50,6 +50,8 @@ jobs:
       - name: Create GitHub Release
         id: create_release
         uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tag_name: ${{ github.sha }}
           release_name: Release ${{ github.sha }}
@@ -57,22 +59,23 @@ jobs:
             Release for commit ${{ github.sha }}
           draft: false
           prerelease: true
-          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload file to GitHub Release
         uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
           asset_path: /home/moonlight/Moonlight.wgt
           asset_name: Moonlight.wgt
           asset_content_type: application/octet-stream
-          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload MoonlightUSB.zip to GitHub Release
         uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
           asset_path: /home/moonlight/MoonlightUSB.zip
           asset_name: MoonlightUSB.zip
           asset_content_type: application/octet-stream
-          token: ${{ secrets.GITHUB_TOKEN }}
