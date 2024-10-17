@@ -51,12 +51,12 @@ jobs:
           container_id=$(docker ps -q -f "ancestor=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}")
           docker cp $container_id:/home/moonlight/Moonlight.wgt . && docker cp $container_id:/home/moonlight/MoonlightUSB.zip .
       - name: Upload artifact Moonlight.wgt
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v4
         with:
           name: Moonlight.wgt
           path: Moonlight.wgt
       - name: Upload artifact MoonlightUSB.zip
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v4
         with:
           name: MoonlightUSB.zip
           path: MoonlightUSB.zip
