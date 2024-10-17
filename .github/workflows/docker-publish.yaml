@@ -46,36 +46,45 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-      
+      - name: Copy artifacts from Docker container
+        run: |
+          container_id=$(docker ps -q -f "ancestor=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}")
+          docker cp $container_id:/home/moonlight/Moonlight.wgt . && docker cp $container_id:/home/moonlight/MoonlightUSB.zip .
+      - name: Upload artifact Moonlight.wgt
+        uses: actions/upload-artifact@v2
+        with:
+          name: Moonlight.wgt
+          path: Moonlight.wgt
+      - name: Upload artifact MoonlightUSB.zip
+        uses: actions/upload-artifact@v2
+        with:
+          name: MoonlightUSB.zip
+          path: MoonlightUSB.zip
       - name: Create GitHub Release
         id: create_release
         uses: actions/create-release@v1
         env:
-          GITHUB_TOKEN: ${{ secrets.GAT }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tag_name: ${{ github.sha }}
-          release_name: Release ${{ github.sha }}
-          body: |
-            Release for commit ${{ github.sha }}
+          release_name: "Pre-release ${{ github.sha }}"
           draft: false
           prerelease: true
-
-      - name: Upload file to GitHub Release
+      - name: Upload Moonlight.wgt to Release
         uses: actions/upload-release-asset@v1
         env:
-          GITHUB_TOKEN: ${{ secrets.GAT }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: /home/moonlight/Moonlight.wgt
+          asset_path: ./Moonlight.wgt
           asset_name: Moonlight.wgt
           asset_content_type: application/octet-stream
-
-      - name: Upload MoonlightUSB.zip to GitHub Release
+      - name: Upload MoonlightUSB.zip to Release
         uses: actions/upload-release-asset@v1
         env:
-          GITHUB_TOKEN: ${{ secrets.GAT }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: /home/moonlight/MoonlightUSB.zip
+          asset_path: ./MoonlightUSB.zip
           asset_name: MoonlightUSB.zip
           asset_content_type: application/octet-stream
