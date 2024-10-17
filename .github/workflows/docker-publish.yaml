@@ -97,8 +97,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tag_name: ${{ github.ref_name }}-${{ needs.build-and-push-image.outputs.short_sha }}
-          release_name: "Pre-release ${{ github.ref_name }}-${{ needs.build-and-push-image.outputs.short_sha }}"
+          tag_name: ${{ github.ref_name }}-${{ github.sha::8 }}
+          release_name: "Pre-release ${{ github.ref_name }}-${{ github.sha::8 }}"
           draft: false
           prerelease: true
 
