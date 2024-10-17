@@ -47,10 +47,21 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
       
+      - name: Create GitHub Release
+        id: create_release
+        uses: actions/create-release@v1
+        with:
+          tag_name: ${{ github.sha }}
+          release_name: Release ${{ github.sha }}
+          body: |
+            Release for commit ${{ github.sha }}
+          draft: false
+          prerelease: true
+
       - name: Upload file to GitHub Release
         uses: actions/upload-release-asset@v1
         with:
-          upload_url: ${{ github.event.release.upload_url }}
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
           asset_path: /home/moonlight/Moonlight.wgt
           asset_name: Moonlight.wgt
           asset_content_type: application/octet-stream
@@ -58,8 +69,7 @@ jobs:
       - name: Upload MoonlightUSB.zip to GitHub Release
         uses: actions/upload-release-asset@v1
         with:
-            upload_url: ${{ github.event.release.upload_url }}
-            asset_path: /home/moonlight/MoonlightUSB.zip
-            asset_name: MoonlightUSB.zip
-            asset_content_type: application/octet-stream
-
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: /home/moonlight/MoonlightUSB.zip
+          asset_name: MoonlightUSB.zip
+          asset_content_type: application/octet-stream
