@@ -66,8 +66,7 @@ jobs:
 
       - name: Run Docker container
         run: |
-          image_name=$(echo "${{ env.IMAGE_NAME }}" | tr '[:upper:]' '[:lower:]')
-          docker run -d --name temp_container ${{ env.REGISTRY }}/$image_name:${{ env.IMAGE_TAG }}
+          docker run -d --name temp_container ghcr.io/oneliberty/moonlight-chrome-tizen:testing
 
       - name: Copy artifacts from Docker container
         run: |
