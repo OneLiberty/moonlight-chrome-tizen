@@ -54,7 +54,7 @@ jobs:
       - name: Run Docker container
         run: |
           image_name=$(echo "${{ env.IMAGE_NAME }}" | tr '[:upper:]' '[:lower:]')
-          docker run -d --name temp_container ${{ env.REGISTRY }}/${image_name}}
+          docker run -d --name temp_container ${{ env.REGISTRY }}/$image_name
 
       - name: Copy artifacts from Docker container
         run: |
