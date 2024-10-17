@@ -46,11 +46,62 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-      
-      - name: Trigger Artifact Workflow
+
+  run-and-upload:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run Docker container
         run: |
-          curl -X POST \
-            -H "Accept: application/vnd.github.v3+json" \
-            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            https://api.github.com/repos/${{ github.repository }}/dispatches \
-            -d '{"event_type":"artifact_workflow"}'
+          image_name=$(echo "${{ env.IMAGE_NAME }}" | tr '[:upper:]' '[:lower:]')
+          docker run -d --name temp_container ${{ env.REGISTRY }}/${image_name}}
+
+      - name: Copy artifacts from Docker container
+        run: |
+          docker cp temp_container:/home/moonlight/Moonlight.wgt . && docker cp temp_container:/home/moonlight/MoonlightUSB.zip .
+
+      - name: Stop and remove Docker container
+        run: |
+          docker stop temp_container && docker rm temp_container
+
+      - name: Upload artifact Moonlight.wgt
+        uses: actions/upload-artifact@v2
+        with:
+          name: Moonlight.wgt
+          path: Moonlight.wgt
+
+      - name: Upload artifact MoonlightUSB.zip
+        uses: actions/upload-artifact@v2
+        with:
+          name: MoonlightUSB.zip
+          path: MoonlightUSB.zip
+
+      - name: Create GitHub Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.sha }}
+          release_name: "Pre-release ${{ github.sha }}"
+          draft: false
+          prerelease: true
+
+      - name: Upload Moonlight.wgt to Release
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./Moonlight.wgt
+          asset_name: Moonlight.wgt
+          asset_content_type: application/octet-stream
+
+      - name: Upload MoonlightUSB.zip to Release
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./MoonlightUSB.zip
+          asset_name: MoonlightUSB.zip
+          asset_content_type: application/octet-stream
