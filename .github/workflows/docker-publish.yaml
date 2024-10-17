@@ -78,13 +78,13 @@ jobs:
           docker stop temp_container && docker rm temp_container
 
       - name: Upload artifact Moonlight.wgt
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v4
         with:
           name: Moonlight.wgt
           path: Moonlight.wgt
 
       - name: Upload artifact MoonlightUSB.zip
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v4
         with:
           name: MoonlightUSB.zip
           path: MoonlightUSB.zip
