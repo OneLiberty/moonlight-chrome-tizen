@@ -5,6 +5,8 @@ name: Create and publish a Docker image
 on:
   push:
     branches: ['samsung_wasm', 'testing']
+  schedule:
+    - cron: '0 12 15 * *' # Run every 15th of the month at 12:00 PM
 
 # Defines two custom environment variables for the workflow. These are used for the Container registry domain, and a name for the Docker image that this workflow builds.
 env:
@@ -67,7 +69,7 @@ jobs:
 
       - name: Run Docker container
         run: |
-          docker run -d --name temp_container ghcr.io/oneliberty/moonlight-chrome-tizen:testing
+          docker run -d --name temp_container ghcr.io/oneliberty/moonlight-chrome-tizen:${{ github.ref_name }}
 
       - name: Copy artifacts from Docker container
         run: |
@@ -100,12 +102,11 @@ jobs:
           tag_name: ${{ github.ref_name }}-${{ github.run_id }}
           release_name: "Pre-release ${{ github.ref_name }}-${{ github.run_id }}"
           body: |
-            #Pre-release build for ${{ github.ref_name }}-${{ github.run_id }}
-            ## Instructions for Installing Moonlight on Your TV:
+            # Instructions for Installing Moonlight on Your TV:
 
             - Ensure that your TV is running on Tizen version 5.5 or higher.
-            - Follow the instructions in the README.md file in the repository for detailed installation steps.
-            - Alternatively, you can use the MoonlightUSB.zip file:
+            - For a persistent installation, follow the instructions in the [README.md](https://github.com/OneLiberty/moonlight-chrome-tizen?tab=readme-ov-file#getting-started), this will require docker. 
+            - Alternatively, you can use the MoonlightUSB.zip to install it (you'll have to redo it every month):
               - Download the MoonlightUSB.zip file.
               - Extract the contents of the zip file to the root directory of your USB key.
               - The structure for your USB Drive should be as follows:
