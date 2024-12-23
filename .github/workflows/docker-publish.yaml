@@ -65,11 +65,10 @@ jobs:
     needs: build-and-push-image
     steps:
       - name: Set up image tag
-        run: echo "IMAGE_TAG=${{ needs.build-and-push-image.outputs.image_tag }}" >> $GITHUB_ENV
+        run: echo "IMAGE_TAG=ghcr.io/oneliberty/moonlight-chrome-tizen:${{ needs.build-and-push-image.outputs.image_tag }}" >> $GITHUB_ENV
 
       - name: Run Docker container
-        run: |
-          docker run -d --name temp_container ghcr.io/oneliberty/moonlight-chrome-tizen:${{ github.ref_name }}
+        run: docker run -d --name temp_container $IMAGE_TAG
 
       - name: Copy artifacts from Docker container
         run: |
