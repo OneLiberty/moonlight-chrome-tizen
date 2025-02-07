@@ -28,17 +28,23 @@ Ensure Docker Desktop is running and close any resource-intensive applications.
      docker run -it --rm ghcr.io/oneliberty/moonlight-chrome-tizen:samsung_wasm
      ```
 3. **Install the Application**:
-   - Connect and install via Smart Development Bridge:
+   - Connect via Smart Development Bridge (Replace `YOUR_TV_IP` with your TV's IP):
      ```
      sdb connect <YOUR_TV_IP>
+     ```
+   - (Optional) Uninstall the previous version if you are upgrading:
+     ```
+     sdb shell 0 vd_appuninstall MoonLightS.MoonlightWasm
+     ```
+   - Install via Smart Development Bridge:
+     ```
      tizen install -n Moonlight.wgt
      exit
      ```
-   - Replace `YOUR_TV_IP` with your TV's IP.
    
    > **Note**: If you have multiple TVs connected to SDB, you need to specify the target TV. Use the `-t <device_id>` option, where `<device_id>` is the ID shown in the last column of the output from the `sdb devices` command.
 
-4. **(Optional) Disable Developer Mode**:
+5. **(Optional) Disable Developer Mode**:
    - Revisit the `Apps` panel to turn off Developer mode and restart the TV.
 
 Moonlight should now be available under `Recent Apps` on your Samsung Smart TV.
