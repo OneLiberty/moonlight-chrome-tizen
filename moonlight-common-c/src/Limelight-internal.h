@@ -29,7 +29,6 @@ extern bool HighQualitySurroundSupported;
 extern bool HighQualitySurroundEnabled;
 extern OPUS_MULTISTREAM_CONFIGURATION NormalQualityOpusConfig;
 extern OPUS_MULTISTREAM_CONFIGURATION HighQualityOpusConfig;
-extern int OriginalVideoBitrate;
 extern int AudioPacketDuration;
 extern bool AudioEncryptionEnabled;
 extern bool ReferenceFrameInvalidationSupported;
@@ -41,8 +40,18 @@ extern uint16_t VideoPortNumber;
 
 extern SS_PING AudioPingPayload;
 extern SS_PING VideoPingPayload;
+extern uint32_t ControlConnectData;
 
 extern uint32_t SunshineFeatureFlags;
+
+// Encryption flags shared by Sunshine and Moonlight in RTSP
+#define SS_ENC_CONTROL_V2 0x01
+#define SS_ENC_VIDEO 0x02
+#define SS_ENC_AUDIO 0x04
+
+extern uint32_t EncryptionFeaturesSupported;
+extern uint32_t EncryptionFeaturesRequested;
+extern uint32_t EncryptionFeaturesEnabled;
 
 // ENet channel ID values
 #define CTRL_CHANNEL_GENERIC      0x00
@@ -77,6 +86,7 @@ extern uint32_t SunshineFeatureFlags;
 
 // Client feature flags for x-ml-general.featureFlags SDP attribute
 #define ML_FF_FEC_STATUS 0x01 // Client sends SS_FRAME_FEC_STATUS for frame losses
+#define ML_FF_SESSION_ID_V1 0x02 // Client supports X-SS-Ping-Payload and X-SS-Connect-Data
 
 #define UDP_RECV_POLL_TIMEOUT_MS 100
 

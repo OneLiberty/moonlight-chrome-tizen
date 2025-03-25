@@ -736,7 +736,6 @@ int stopInputStream(void) {
     // input packets before shutting down.
     LbqSignalQueueDrain(&packetQueue);
     PltJoinThread(&inputSendThread);
-    PltCloseThread(&inputSendThread);
 
     if (inputSock != INVALID_SOCKET) {
         shutdownTcpSocket(inputSock);

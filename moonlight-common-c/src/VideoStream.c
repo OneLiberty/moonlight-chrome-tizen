@@ -10,6 +10,8 @@ static RTP_VIDEO_QUEUE rtpQueue;
 static SOCKET rtpSocket = INVALID_SOCKET;
 static SOCKET firstFrameSocket = INVALID_SOCKET;
 
+static PPLT_CRYPTO_CONTEXT decryptionCtx;
+
 static PLT_THREAD udpPingThread;
 static PLT_THREAD receiveThread;
 static PLT_THREAD decoderThread;
@@ -36,6 +38,7 @@ static bool receivedFullFrame;
 void initializeVideoStream(void) {
     initializeVideoDepacketizer(StreamConfig.packetSize);
     RtpvInitializeQueue(&rtpQueue);
+    decryptionCtx = PltCreateCryptoContext();
     receivedDataFromPeer = false;
     firstDataTimeMs = 0;
     receivedFullFrame = false;
@@ -43,6 +46,7 @@ void initializeVideoStream(void) {
 
 // Clean up the video stream
 void destroyVideoStream(void) {
+    PltDestroyCryptoContext(decryptionCtx);
     destroyVideoDepacketizer();
     RtpvCleanupQueue(&rtpQueue);
 }
@@ -80,14 +84,19 @@ static void VideoPingThreadProc(void* context) {
 // Receive thread proc
 static void VideoReceiveThreadProc(void* context) {
     int err;
-    int bufferSize, receiveSize;
+    int bufferSize, receiveSize, decryptedSize, minSize;
     char* buffer;
+    char* encryptedBuffer;
     int queueStatus;
     bool useSelect;
     int waitingForVideoMs;
+    bool encrypted;
 
-    receiveSize = StreamConfig.packetSize + MAX_RTP_HEADER_SIZE;
-    bufferSize = receiveSize + sizeof(RTPV_QUEUE_ENTRY);
+    encrypted = !!(EncryptionFeaturesEnabled & SS_ENC_VIDEO);
+    decryptedSize = StreamConfig.packetSize + MAX_RTP_HEADER_SIZE;
+    minSize = sizeof(RTP_PACKET) + ((EncryptionFeaturesEnabled & SS_ENC_VIDEO) ? sizeof(ENC_VIDEO_HEADER) : 0);
+    receiveSize = decryptedSize + ((EncryptionFeaturesEnabled & SS_ENC_VIDEO) ? sizeof(ENC_VIDEO_HEADER) : 0);
+    bufferSize = decryptedSize + sizeof(RTPV_QUEUE_ENTRY);
     buffer = NULL;
 
     if (setNonFatalRecvTimeoutMs(rtpSocket, UDP_RECV_POLL_TIMEOUT_MS) < 0) {
@@ -99,6 +108,19 @@ static void VideoReceiveThreadProc(void* context) {
         useSelect = false;
     }
 
+    // Allocate a staging buffer to use for each received packet
+    if (encrypted) {
+        encryptedBuffer = (char*)malloc(receiveSize);
+        if (encryptedBuffer == NULL) {
+            Limelog("Video Receive: malloc() failed\n");
+            ListenerCallbacks.connectionTerminated(-1);
+            return;
+        }
+    }
+    else {
+        encryptedBuffer = NULL;
+    }
+
     waitingForVideoMs = 0;
     while (!PltIsThreadInterrupted(&receiveThread)) {
         PRTP_PACKET packet;
@@ -108,11 +130,14 @@ static void VideoReceiveThreadProc(void* context) {
             if (buffer == NULL) {
                 Limelog("Video Receive: malloc() failed\n");
                 ListenerCallbacks.connectionTerminated(-1);
-                return;
+                break;
             }
         }
 
-        err = recvUdpSocket(rtpSocket, buffer, receiveSize, useSelect);
+        err = recvUdpSocket(rtpSocket,
+                            encrypted ? encryptedBuffer : buffer,
+                            receiveSize,
+                            useSelect);
         if (err < 0) {
             Limelog("Video Receive: recvUdpSocket() failed: %d\n", (int)LastSocketError());
             ListenerCallbacks.connectionTerminated(LastSocketFail());
@@ -153,9 +178,49 @@ static void VideoReceiveThreadProc(void* context) {
         }
 #endif
 
-        if (err < (int)sizeof(RTP_PACKET)) {
+        if (err < minSize) {
             // Runt packet
             continue;
+        }
+
+        // Decrypt the packet into the buffer if encryption is enabled
+        if (encrypted) {
+            PENC_VIDEO_HEADER encHeader = (PENC_VIDEO_HEADER)encryptedBuffer;
+
+            // If this frame is below our current frame number, discard it before decryption
+            // to save CPU cycles decrypting FEC shards for a frame we already reassembled.
+            //
+            // Since this is happening _before_ decryption, this packet is not trusted yet.
+            // It's imperative that we do not mutate any state based on this packet until
+            // after it has been decrypted successfully!
+            //
+            // It's possible for an attacker to inject a fake packet that has any value of
+            // header fields they want, however this provides them no benefit because we will
+            // simply drop said packet here (if it's below the current frame number) or it
+            // will pass this check and be dropped during decryption (if contents is tampered)
+            // or after decryption in the RTP queue (if it's a replay of a previous authentic
+            // packet from the host).
+            //
+            // In short, an attacker spoofing this value via MITM or sending malicious values
+            // impersonating the host from off-link doesn't gain them anything. If they have
+            // a true MITM, they can DoS our connection by just dropping all our traffic, so
+            // tampering with packets to fail this check doesn't accomplish anything they
+            // couldn't already do. If they're not on-link, we just throw their malicious
+            // traffic away (as mentioned in the paragraph above) and continue accepting
+            // legitmate video traffic.
+            if (encHeader->frameNumber && LE32(encHeader->frameNumber) < RtpvGetCurrentFrameNumber(&rtpQueue)) {
+                continue;
+            }
+
+            if (!PltDecryptMessage(decryptionCtx, ALGORITHM_AES_GCM, 0,
+                                   (unsigned char*)StreamConfig.remoteInputAesKey, sizeof(StreamConfig.remoteInputAesKey),
+                                   encHeader->iv, sizeof(encHeader->iv),
+                                   encHeader->tag, sizeof(encHeader->tag),
+                                   ((unsigned char*)(encHeader + 1)), err - sizeof(ENC_VIDEO_HEADER), // The ciphertext is after the header
+                                   (unsigned char*)buffer, &err)) {
+                Limelog("Failed to decrypt video packet!\n");
+                continue;
+            }
         }
 
         // Convert fields to host byte-order
@@ -164,7 +229,7 @@ static void VideoReceiveThreadProc(void* context) {
         packet->timestamp = BE32(packet->timestamp);
         packet->ssrc = BE32(packet->ssrc);
 
-        queueStatus = RtpvAddPacket(&rtpQueue, packet, err, (PRTPV_QUEUE_ENTRY)&buffer[receiveSize]);
+        queueStatus = RtpvAddPacket(&rtpQueue, packet, err, (PRTPV_QUEUE_ENTRY)&buffer[decryptedSize]);
 
         if (queueStatus == RTPF_RET_QUEUED) {
             // The queue owns the buffer
@@ -174,6 +239,10 @@ static void VideoReceiveThreadProc(void* context) {
 
     if (buffer != NULL) {
         free(buffer);
+    }
+
+    if (encryptedBuffer != NULL) {
+        free(encryptedBuffer);
     }
 }
 
@@ -233,12 +302,6 @@ void stopVideoStream(void) {
     if ((VideoCallbacks.capabilities & (CAPABILITY_DIRECT_SUBMIT | CAPABILITY_PULL_RENDERER)) == 0) {
         PltJoinThread(&decoderThread);
     }
-
-    PltCloseThread(&udpPingThread);
-    PltCloseThread(&receiveThread);
-    if ((VideoCallbacks.capabilities & (CAPABILITY_DIRECT_SUBMIT | CAPABILITY_PULL_RENDERER)) == 0) {
-        PltCloseThread(&decoderThread);
-    }
     
     if (firstFrameSocket != INVALID_SOCKET) {
         closeSocket(firstFrameSocket);
@@ -268,7 +331,8 @@ int startVideoStream(void* rendererContext, int drFlags) {
     }
 
     rtpSocket = bindUdpSocket(RemoteAddr.ss_family, &LocalAddr, AddrLen,
-                              RTP_RECV_PACKETS_BUFFERED * (StreamConfig.packetSize + MAX_RTP_HEADER_SIZE));
+                              RTP_RECV_PACKETS_BUFFERED * (StreamConfig.packetSize + MAX_RTP_HEADER_SIZE),
+                              SOCK_QOS_TYPE_VIDEO);
     if (rtpSocket == INVALID_SOCKET) {
         VideoCallbacks.cleanup();
         return LastSocketError();
@@ -290,7 +354,6 @@ int startVideoStream(void* rendererContext, int drFlags) {
             VideoCallbacks.stop();
             PltInterruptThread(&receiveThread);
             PltJoinThread(&receiveThread);
-            PltCloseThread(&receiveThread);
             closeSocket(rtpSocket);
             VideoCallbacks.cleanup();
             return err;
@@ -312,10 +375,6 @@ int startVideoStream(void* rendererContext, int drFlags) {
             if ((VideoCallbacks.capabilities & (CAPABILITY_DIRECT_SUBMIT | CAPABILITY_PULL_RENDERER)) == 0) {
                 PltJoinThread(&decoderThread);
             }
-            PltCloseThread(&receiveThread);
-            if ((VideoCallbacks.capabilities & (CAPABILITY_DIRECT_SUBMIT | CAPABILITY_PULL_RENDERER)) == 0) {
-                PltCloseThread(&decoderThread);
-            }
             closeSocket(rtpSocket);
             VideoCallbacks.cleanup();
             return LastSocketError();
@@ -335,10 +394,6 @@ int startVideoStream(void* rendererContext, int drFlags) {
         PltJoinThread(&receiveThread);
         if ((VideoCallbacks.capabilities & (CAPABILITY_DIRECT_SUBMIT | CAPABILITY_PULL_RENDERER)) == 0) {
             PltJoinThread(&decoderThread);
-        }
-        PltCloseThread(&receiveThread);
-        if ((VideoCallbacks.capabilities & (CAPABILITY_DIRECT_SUBMIT | CAPABILITY_PULL_RENDERER)) == 0) {
-            PltCloseThread(&decoderThread);
         }
         closeSocket(rtpSocket);
         if (firstFrameSocket != INVALID_SOCKET) {

@@ -9,6 +9,10 @@
 static int serviceEnetHostInternal(ENetHost* client, ENetEvent* event, enet_uint32 timeoutMs, bool ignoreInterrupts) {
     int ret;
 
+    // Clear the last socket error to ensure the caller doesn't read a stale error upon a
+    // failure in non-socket-related processing in enet_host_service()
+    SetLastSocketError(0);
+
     // We need to call enet_host_service() multiple times to make sure retransmissions happen
     for (;;) {
         int selectedTimeout = timeoutMs < ENET_INTERNAL_TIMEOUT_MS ? timeoutMs : ENET_INTERNAL_TIMEOUT_MS;
@@ -16,6 +20,7 @@ static int serviceEnetHostInternal(ENetHost* client, ENetEvent* event, enet_uint
         // We want to report an interrupt event if we are able to read data
         if (!ignoreInterrupts && ConnectionInterrupted) {
             Limelog("ENet wait interrupted\n");
+            SetLastSocketError(EINTR);
             ret = -1;
             break;
         }
@@ -67,7 +72,7 @@ int gracefullyDisconnectEnetPeer(ENetHost* host, ENetPeer* peer, enet_uint32 lin
             Limelog("Timed out waiting for ENet peer to acknowledge disconnection\n");
         }
         else {
-            Limelog("Failed to receive ENet peer disconnection acknowledgement\n");
+            Limelog("Failed to receive ENet peer disconnection acknowledgement: %d\n", LastSocketFail());
         }
 
         return -1;

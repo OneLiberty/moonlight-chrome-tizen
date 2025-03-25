@@ -17,6 +17,7 @@ struct thread_context {
 static int activeThreads = 0;
 static int activeMutexes = 0;
 static int activeEvents = 0;
+static int activeCondVars = 0;
 
 #if defined(LC_WINDOWS)
 
@@ -88,12 +89,18 @@ void* ThreadProc(void* context) {
     ctx->entry(ctx->context);
 
 #if defined(__vita__)
-    ctx->thread->alive = false;
+    if (ctx->thread->detached) {
+        free(ctx);
+        sceKernelExitDeleteThread(0);
+    }
+    else {
+        free(ctx);
+    }
 #else
     free(ctx);
 #endif
 
-#if defined(LC_WINDOWS) || defined(__vita__) || defined(__WIIU__)
+#if defined(LC_WINDOWS) || defined(__vita__) || defined(__WIIU__) || defined(__3DS__)
     return 0;
 #else
     return NULL;
@@ -105,6 +112,9 @@ void PltSleepMs(int ms) {
     SleepEx(ms, FALSE);
 #elif defined(__vita__)
     sceKernelDelayThread(ms * 1000);
+#elif defined(__3DS__)
+    s64 nsecs = ms * 1000000;
+    svcSleepThread(nsecs);
 #else
     useconds_t usecs = ms * 1000;
     usleep(usecs);
@@ -129,6 +139,8 @@ int PltCreateMutex(PLT_MUTEX* mutex) {
     }
 #elif defined(__WIIU__)
     OSFastMutex_Init(mutex, "");
+#elif defined(__3DS__)
+    LightLock_Init(mutex);
 #else
     int err = pthread_mutex_init(mutex, NULL);
     if (err != 0) {
@@ -140,12 +152,13 @@ int PltCreateMutex(PLT_MUTEX* mutex) {
 }
 
 void PltDeleteMutex(PLT_MUTEX* mutex) {
+    LC_ASSERT(activeMutexes > 0);
     activeMutexes--;
 #if defined(LC_WINDOWS)
     // No-op to destroy a SRWLOCK
 #elif defined(__vita__)
     sceKernelDeleteMutex(*mutex);
-#elif defined(__WIIU__)
+#elif defined(__WIIU__) || defined(__3DS__)
 
 #else
     pthread_mutex_destroy(mutex);
@@ -159,6 +172,8 @@ void PltLockMutex(PLT_MUTEX* mutex) {
     sceKernelLockMutex(*mutex, 1, NULL);
 #elif defined(__WIIU__)
     OSFastMutex_Lock(mutex);
+#elif defined(__3DS__)
+    LightLock_Lock(mutex);
 #else
     pthread_mutex_lock(mutex);
 #endif
@@ -171,33 +186,51 @@ void PltUnlockMutex(PLT_MUTEX* mutex) {
     sceKernelUnlockMutex(*mutex, 1);
 #elif defined(__WIIU__)
     OSFastMutex_Unlock(mutex);
+#elif defined(__3DS__)
+    LightLock_Unlock(mutex);
 #else
     pthread_mutex_unlock(mutex);
 #endif
 }
 
 void PltJoinThread(PLT_THREAD* thread) {
+    LC_ASSERT(activeThreads > 0);
+    activeThreads--;
+
 #if defined(LC_WINDOWS)
     WaitForSingleObjectEx(thread->handle, INFINITE, FALSE);
+    CloseHandle(thread->handle);
 #elif defined(__vita__)
-    while(thread->alive) {
-        PltSleepMs(10);
-    }
-    if (thread->context != NULL)
-        free(thread->context);
+    LC_ASSERT(!thread->detached);
+    sceKernelWaitThreadEnd(thread->handle, NULL, NULL);
+    sceKernelDeleteThread(thread->handle);
 #elif defined(__WIIU__)
     OSJoinThread(&thread->thread, NULL);
+#elif defined(__3DS__)
+    threadJoin(thread->thread, U64_MAX);
+    threadFree(thread->thread);
 #else
     pthread_join(thread->thread, NULL);
 #endif
 }
 
-void PltCloseThread(PLT_THREAD* thread) {
+void PltDetachThread(PLT_THREAD* thread) {
+    LC_ASSERT(activeThreads > 0);
     activeThreads--;
+
 #if defined(LC_WINDOWS)
+    // According MSDN:
+    // "Closing a thread handle does not terminate the associated thread or remove the thread object."
     CloseHandle(thread->handle);
 #elif defined(__vita__)
-    sceKernelDeleteThread(thread->handle);
+    LC_ASSERT(!thread->detached);
+    thread->detached = true;
+#elif defined(__WIIU__)
+    OSDetachThread(&thread->thread);
+#elif defined(__3DS__)
+    threadDetach(thread->thread);
+#else
+    pthread_detach(thread->thread);
 #endif
 }
 
@@ -226,7 +259,7 @@ int PltCreateThread(const char* name, ThreadEntry entry, void* context, PLT_THRE
     ctx->entry = entry;
     ctx->context = context;
     ctx->name = name;
-    
+
     thread->cancelled = false;
 
 #if defined(LC_WINDOWS)
@@ -239,7 +272,7 @@ int PltCreateThread(const char* name, ThreadEntry entry, void* context, PLT_THRE
     }
 #elif defined(__vita__)
     {
-        thread->alive = true;
+        thread->detached = false;
         thread->context = ctx;
         ctx->thread = thread;
         thread->handle = sceKernelCreateThread(name, ThreadProc, 0, 0x40000, 0, 0, NULL);
@@ -250,21 +283,47 @@ int PltCreateThread(const char* name, ThreadEntry entry, void* context, PLT_THRE
         sceKernelStartThread(thread->handle, sizeof(struct thread_context), ctx);
     }
 #elif defined(__WIIU__)
-    int stack_size = 4 * 1024 * 1024;
-    void* stack_addr = (uint8_t *)memalign(8, stack_size) + stack_size;
+    memset(&thread->thread, 0, sizeof(thread->thread));
 
-    if (!OSCreateThread(&thread->thread,
-                        ThreadProc,
-                        0, (char*)ctx,
-                        stack_addr, stack_size,
-                        0x10, OS_THREAD_ATTRIB_AFFINITY_ANY))
-    {
+    // Allocate stack
+    const int stack_size = 4 * 1024 * 1024;
+    uint8_t* stack = (uint8_t*)memalign(16, stack_size);
+    if (stack == NULL) {
         free(ctx);
         return -1;
     }
 
+    // Create thread
+    if (!OSCreateThread(&thread->thread,
+                        ThreadProc,
+                        0, (char*)ctx,
+                        stack + stack_size, stack_size,
+                        0x10, OS_THREAD_ATTRIB_AFFINITY_ANY))
+    {
+        free(ctx);
+        free(stack);
+        return -1;
+    }
+
+    OSSetThreadName(&thread->thread, name);
     OSSetThreadDeallocator(&thread->thread, thread_deallocator);
     OSResumeThread(&thread->thread);
+#elif defined(__3DS__)
+    {
+        size_t stack_size = 0x40000;
+        s32 priority = 0x30;
+        svcGetThreadPriority(&priority, CUR_THREAD_HANDLE);
+        thread->thread = threadCreate(ThreadProc,
+                                    ctx,
+                                    stack_size,
+                                    priority,
+                                    -1,
+                                    false);
+        if (thread->thread == NULL) {
+            free(ctx);
+            return -1;
+        }
+    }
 #else
     {
         int err = pthread_create(&thread->thread, NULL, ThreadProc, ctx);
@@ -301,6 +360,7 @@ int PltCreateEvent(PLT_EVENT* event) {
 }
 
 void PltCloseEvent(PLT_EVENT* event) {
+    LC_ASSERT(activeEvents > 0);
     activeEvents--;
 #if defined(LC_WINDOWS)
     CloseHandle(*event);
@@ -351,19 +411,26 @@ int PltCreateConditionVariable(PLT_COND* cond, PLT_MUTEX* mutex) {
     }
 #elif defined(__WIIU__)
     OSFastCond_Init(cond, "");
+#elif defined(__3DS__)
+    CondVar_Init(cond);
 #else
     pthread_cond_init(cond, NULL);
 #endif
+    activeCondVars++;
     return 0;
 }
 
 void PltDeleteConditionVariable(PLT_COND* cond) {
+    LC_ASSERT(activeCondVars > 0);
+    activeCondVars--;
 #if defined(LC_WINDOWS)
     // No-op to delete a CONDITION_VARIABLE
 #elif defined(__vita__)
     sceKernelDeleteCond(*cond);
 #elif defined(__WIIU__)
     // No-op to delete an OSFastCondition
+#elif defined(__3DS__)
+    // No-op to delete CondVar
 #else
     pthread_cond_destroy(cond);
 #endif
@@ -376,6 +443,8 @@ void PltSignalConditionVariable(PLT_COND* cond) {
     sceKernelSignalCond(*cond);
 #elif defined(__WIIU__)
     OSFastCond_Signal(cond);
+#elif defined(__3DS__)
+    CondVar_Signal(cond);
 #else
     pthread_cond_signal(cond);
 #endif
@@ -388,6 +457,8 @@ void PltWaitForConditionVariable(PLT_COND* cond, PLT_MUTEX* mutex) {
     sceKernelWaitCond(*cond, NULL);
 #elif defined(__WIIU__)
     OSFastCond_Wait(cond, mutex);
+#elif defined(__3DS__)
+    CondVar_Wait(cond, mutex);
 #else
     pthread_cond_wait(cond, mutex);
 #endif
@@ -452,7 +523,7 @@ int initializePlatform(void) {
     if (err != 0) {
         return err;
     }
-    
+
     err = enet_initialize();
     if (err != 0) {
         return err;
@@ -460,17 +531,18 @@ int initializePlatform(void) {
 
     enterLowLatencyMode();
 
-	return 0;
+    return 0;
 }
 
 void cleanupPlatform(void) {
     exitLowLatencyMode();
 
     cleanupPlatformSockets();
-    
+
     enet_deinitialize();
 
     LC_ASSERT(activeThreads == 0);
     LC_ASSERT(activeMutexes == 0);
     LC_ASSERT(activeEvents == 0);
+    LC_ASSERT(activeCondVars == 0);
 }

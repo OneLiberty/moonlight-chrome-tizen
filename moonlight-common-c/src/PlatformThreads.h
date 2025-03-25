@@ -19,7 +19,7 @@ typedef struct _PLT_THREAD {
     int handle;
     int cancelled;
     void *context;
-    bool alive;
+    bool detached;
 } PLT_THREAD;
 #elif defined(__WIIU__)
 typedef OSFastMutex PLT_MUTEX;
@@ -27,6 +27,13 @@ typedef OSFastCondition PLT_COND;
 typedef struct _PLT_THREAD {
     OSThread thread;
     int cancelled;
+} PLT_THREAD;
+#elif defined(__3DS__)
+typedef LightLock PLT_MUTEX;
+typedef CondVar PLT_COND;
+typedef struct _PLT_THREAD {
+    Thread thread;
+    bool cancelled;
 } PLT_THREAD;
 #elif defined (LC_POSIX)
 typedef pthread_mutex_t PLT_MUTEX;
@@ -55,10 +62,10 @@ void PltLockMutex(PLT_MUTEX* mutex);
 void PltUnlockMutex(PLT_MUTEX* mutex);
 
 int PltCreateThread(const char* name, ThreadEntry entry, void* context, PLT_THREAD* thread);
-void PltCloseThread(PLT_THREAD* thread);
 void PltInterruptThread(PLT_THREAD* thread);
 bool PltIsThreadInterrupted(PLT_THREAD* thread);
 void PltJoinThread(PLT_THREAD* thread);
+void PltDetachThread(PLT_THREAD* thread);
 
 int PltCreateEvent(PLT_EVENT* event);
 void PltCloseEvent(PLT_EVENT* event);

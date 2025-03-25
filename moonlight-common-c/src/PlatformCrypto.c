@@ -71,8 +71,6 @@ bool PltEncryptMessage(PPLT_CRYPTO_CONTEXT ctx, int algorithm, int flags,
         ctx->initialized = true;
     }
 
-    outLength = *outputDataLength;
-
     if (tag != NULL) {
 #ifdef USE_MBEDTLS_CRYPTO_EXT
         // In mbedTLS, tag is always after ciphertext, while we need to put tag BEFORE ciphertext here
@@ -88,7 +86,7 @@ bool PltEncryptMessage(PPLT_CRYPTO_CONTEXT ctx, int algorithm, int flags,
 #endif
         size_t encryptedLength = 0;
         unsigned char * encryptedData = tag;
-        size_t encryptedCapacity = outLength + tagLength;
+        size_t encryptedCapacity = inputDataLength + tagLength;
         if (mbedtls_cipher_auth_encrypt_ext(&ctx->ctx, iv, ivLength, NULL, 0, inputData, inputDataLength, encryptedData,
                                             encryptedCapacity, &encryptedLength, tagLength) != 0) {
             return false;
@@ -273,8 +271,6 @@ bool PltDecryptMessage(PPLT_CRYPTO_CONTEXT ctx, int algorithm, int flags,
         ctx->initialized = true;
     }
 
-    outLength = *outputDataLength;
-
     if (tag != NULL) {
 #ifdef USE_MBEDTLS_CRYPTO_EXT
         // We only support 16 bytes sized tag
@@ -296,7 +292,7 @@ bool PltDecryptMessage(PPLT_CRYPTO_CONTEXT ctx, int algorithm, int flags,
         // Copy back tag to the end
         memcpy(encryptedData + inputDataLength, tagTemp, tagLength);
         if (mbedtls_cipher_auth_decrypt_ext(&ctx->ctx, iv, ivLength, NULL, 0, encryptedData, encryptedDataLen,
-                                            outputData, outLength, &outLength, tagLength) != 0) {
+                                            outputData, inputDataLength, &outLength, tagLength) != 0) {
             return false;
         }
 #else

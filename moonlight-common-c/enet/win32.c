@@ -23,6 +23,9 @@ static enet_uint32 timeBase = 0;
 
 #if !(defined(WINAPI_FAMILY) && WINAPI_FAMILY == WINAPI_FAMILY_APP)
 # define HAS_QWAVE
+# include <VersionHelpers.h>
+#else
+# define IsWindows10OrGreater() TRUE
 #endif
 
 #ifdef HAS_QWAVE
@@ -39,7 +42,8 @@ BOOL (WINAPI *pfnQOSAddSocketToFlow)(HANDLE QOSHandle, SOCKET Socket, PSOCKADDR 
 
 #endif
 
-LPFN_WSARECVMSG pfnWSARecvMsg;
+static BOOL enableEcn;
+static LPFN_WSARECVMSG pfnWSARecvMsg;
 
 
 int
@@ -85,6 +89,7 @@ enet_deinitialize (void)
 #ifdef HAS_QWAVE
     qosAddedFlow = FALSE;
     qosFlowId = 0;
+    enableEcn = FALSE;
 
     if (qosHandle != INVALID_HANDLE_VALUE)
     {
@@ -322,6 +327,9 @@ enet_socket_set_option (ENetSocket socket, ENetSocketOption option, int value)
 
         case ENET_SOCKOPT_QOS:
         {
+            // Enable ECN marking on Windows 10 if QOS is enabled
+            enableEcn = value != 0 && IsWindows10OrGreater();
+
 #ifdef HAS_QWAVE
             if (value)
             {
@@ -432,24 +440,46 @@ enet_socket_send (ENetSocket socket,
     DWORD sentLength;
     WSAMSG msg = { 0 };
     char controlBufData[1024];
+    PWSACMSGHDR chdr = NULL;
+
 #ifdef HAS_QWAVE
     if (!qosAddedFlow && qosHandle != INVALID_HANDLE_VALUE)
     {
+        BOOL isV4MappedV6Addr =
+            peerAddress->address.ss_family == AF_INET6 &&
+            IN6_IS_ADDR_V4MAPPED(&((PSOCKADDR_IN6)&peerAddress->address)->sin6_addr);
+
+        // qWAVE doesn't properly support IPv4-mapped IPv6 addresses, nor does it
+        // correctly support IPv4 addresses on a dual-stack socket (despite MSDN's
+        // claims to the contrary). To get proper QoS tagging when hosting in dual
+        // stack mode, we will temporarily connect() the socket to allow qWAVE to
+        // successfully initialize a flow, then disconnect it again so WSASendMsg()
+        // works later on.
+        if (isV4MappedV6Addr) {
+            connect(socket, (PSOCKADDR)&peerAddress->address, peerAddress->addressLength);
+        }
+
         qosFlowId = 0; // Must be initialized to 0
         pfnQOSAddSocketToFlow(qosHandle,
                               socket,
-                              (struct sockaddr *)&peerAddress->address,
+                              isV4MappedV6Addr ? NULL : (struct sockaddr *)&peerAddress->address,
                               QOSTrafficTypeControl,
                               QOS_NON_ADAPTIVE_FLOW,
                               &qosFlowId);
+
+        if (isV4MappedV6Addr) {
+            SOCKADDR_IN6 empty = { 0 };
+            empty.sin6_family = AF_INET6;
+            connect(socket, (PSOCKADDR)&empty, sizeof(empty));
+        }
 
         // Even if we failed, don't try again
         qosAddedFlow = TRUE;
     }
 #endif
 
-    msg.name = peerAddress != NULL ? (struct sockaddr *) & peerAddress -> address : NULL;
-    msg.namelen = peerAddress != NULL ? peerAddress -> addressLength : 0;
+    msg.name = (struct sockaddr *) & peerAddress -> address;
+    msg.namelen = peerAddress -> addressLength;
     msg.lpBuffers = (LPWSABUF) buffers;
     msg.dwBufferCount = (DWORD) bufferCount;
 
@@ -464,9 +494,14 @@ enet_socket_send (ENetSocket socket,
             pktInfo.ipi_ifindex = 0; // Unspecified
 
             msg.Control.buf = controlBufData;
-            msg.Control.len = WSA_CMSG_SPACE(sizeof(pktInfo));
+            msg.Control.len += WSA_CMSG_SPACE(sizeof(pktInfo));
+            if (chdr == NULL) {
+                chdr = WSA_CMSG_FIRSTHDR(&msg);
+            }
+            else {
+                chdr = WSA_CMSG_NXTHDR(&msg, chdr);
+            }
 
-            PWSACMSGHDR chdr = WSA_CMSG_FIRSTHDR(&msg);
             chdr->cmsg_level = IPPROTO_IP;
             chdr->cmsg_type = IP_PKTINFO;
             chdr->cmsg_len = WSA_CMSG_LEN(sizeof(pktInfo));
@@ -479,14 +514,48 @@ enet_socket_send (ENetSocket socket,
             pktInfo.ipi6_ifindex = 0; // Unspecified
 
             msg.Control.buf = controlBufData;
-            msg.Control.len = WSA_CMSG_SPACE(sizeof(pktInfo));
+            msg.Control.len += WSA_CMSG_SPACE(sizeof(pktInfo));
+            if (chdr == NULL) {
+                chdr = WSA_CMSG_FIRSTHDR(&msg);
+            }
+            else {
+                chdr = WSA_CMSG_NXTHDR(&msg, chdr);
+            }
 
-            PWSACMSGHDR chdr = WSA_CMSG_FIRSTHDR(&msg);
             chdr->cmsg_level = IPPROTO_IPV6;
             chdr->cmsg_type = IPV6_PKTINFO;
             chdr->cmsg_len = WSA_CMSG_LEN(sizeof(pktInfo));
             memcpy(WSA_CMSG_DATA(chdr), &pktInfo, sizeof(pktInfo));
         }
+    }
+
+    // This is a bit of a hack because it's not really per-socket or
+    // per-destination, but it is fine for our current usage of ENet
+    // in Moonlight and Sunshine where only a single socket is used.
+    if (enableEcn) {
+        BOOL isV4MappedV6Addr =
+            peerAddress->address.ss_family == AF_INET6 &&
+            IN6_IS_ADDR_V4MAPPED(&((PSOCKADDR_IN6)&peerAddress->address)->sin6_addr);
+
+        msg.Control.buf = controlBufData;
+        msg.Control.len += WSA_CMSG_SPACE(sizeof(INT));
+        if (chdr == NULL) {
+            chdr = WSA_CMSG_FIRSTHDR(&msg);
+        }
+        else {
+            chdr = WSA_CMSG_NXTHDR(&msg, chdr);
+        }
+
+        if (peerAddress->address.ss_family == AF_INET || isV4MappedV6Addr) {
+            chdr->cmsg_level = IPPROTO_IP;
+            chdr->cmsg_type = IP_ECN;
+        }
+        else {
+            chdr->cmsg_level = IPPROTO_IPV6;
+            chdr->cmsg_type = IPV6_ECN;
+        }
+        chdr->cmsg_len = WSA_CMSG_LEN(sizeof(INT));
+        *(PINT)WSA_CMSG_DATA(chdr) = 0x01; // ECT(1) (L4S)
     }
 
     if (WSASendMsg (socket,
@@ -496,10 +565,26 @@ enet_socket_send (ENetSocket socket,
                     NULL,
                     NULL) == SOCKET_ERROR)
     {
-       if (WSAGetLastError () == WSAEWOULDBLOCK)
-         return 0;
+        switch (WSAGetLastError ())
+        {
+        case WSAEWOULDBLOCK:
+            return 0;
 
-       return -1;
+        // These errors are treated as possible transient
+        // conditions that could be caused by a network
+        // interruption. We'll ignore them and allow the
+        // socket timeout to kill us if the connection
+        // is permanently interrupted.
+        case WSAEADDRNOTAVAIL:
+        case WSAENETDOWN:
+        case WSAENETUNREACH:
+        case WSAEHOSTDOWN:
+        case WSAEHOSTUNREACH:
+            return 0;
+
+        default:
+            return -1;
+        }
     }
 
     return (int) sentLength;

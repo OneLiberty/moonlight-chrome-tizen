@@ -13,6 +13,11 @@ static int rtspClientVersion;
 static char urlAddr[URLSAFESTRING_LEN];
 static bool useEnet;
 static char* controlStreamId;
+static bool encryptedRtspEnabled;
+
+static PPLT_CRYPTO_CONTEXT encryptionCtx;
+static PPLT_CRYPTO_CONTEXT decryptionCtx;
+static uint32_t encryptionSequenceNumber;
 
 static SOCKET sock = INVALID_SOCKET;
 static ENetHost* client;
@@ -84,6 +89,159 @@ static bool initializeRtspRequest(PRTSP_MESSAGE msg, char* command, char* target
     return true;
 }
 
+#define ENCRYPTED_RTSP_BIT 0x80000000
+
+typedef struct _ENC_RTSP_HEADER {
+    uint32_t typeAndLength; // BE
+    uint32_t sequenceNumber; // BE
+    uint8_t tag[16];
+} ENC_RTSP_HEADER, *PENC_RTSP_HEADER;
+
+static char* sealRtspMessage(PRTSP_MESSAGE request, int* messageLen) {
+    char* serializedMessage;
+    PENC_RTSP_HEADER encryptedMessage;
+    int plaintextLen;
+    bool success;
+    uint8_t iv[12] = { 0 };
+
+    serializedMessage = serializeRtspMessage(request, &plaintextLen);
+    if (serializedMessage == NULL) {
+        return NULL;
+    }
+    else if (!encryptedRtspEnabled) {
+        *messageLen = plaintextLen;
+        return serializedMessage;
+    }
+
+    encryptedMessage = (PENC_RTSP_HEADER)malloc(sizeof(ENC_RTSP_HEADER) + plaintextLen);
+    if (encryptedMessage == NULL) {
+        free(serializedMessage);
+        return NULL;
+    }
+
+    // Populate the IV in little endian byte order
+    encryptionSequenceNumber++;
+    iv[3] = (uint8_t)(encryptionSequenceNumber >> 24);
+    iv[2] = (uint8_t)(encryptionSequenceNumber >> 16);
+    iv[1] = (uint8_t)(encryptionSequenceNumber >> 8);
+    iv[0] = (uint8_t)(encryptionSequenceNumber >> 0);
+
+    // Set high bytes to something unique to ensure no IV collisions
+    iv[10] = (uint8_t)'C'; // Client originated
+    iv[11] = (uint8_t)'R'; // RTSP stream
+
+    encryptedMessage->typeAndLength = BE32(ENCRYPTED_RTSP_BIT | plaintextLen);
+    encryptedMessage->sequenceNumber = BE32(encryptionSequenceNumber);
+
+    success = PltEncryptMessage(encryptionCtx, ALGORITHM_AES_GCM, 0,
+                                (uint8_t*)StreamConfig.remoteInputAesKey, sizeof(StreamConfig.remoteInputAesKey),
+                                iv, sizeof(iv),
+                                encryptedMessage->tag, sizeof(encryptedMessage->tag),
+                                (uint8_t*)serializedMessage, plaintextLen,
+                                (uint8_t*)(encryptedMessage + 1), messageLen);
+    free(serializedMessage);
+
+    if (!success) {
+        free(encryptedMessage);
+        return NULL;
+    }
+
+    // The size returned from PltEncryptMessage() is the payload only
+    *messageLen += sizeof(ENC_RTSP_HEADER);
+
+    return (char*)encryptedMessage;
+}
+
+static bool unsealRtspMessage(char* rawMessage, int rawMessageLen, PRTSP_MESSAGE response) {
+    char* decryptedMessage;
+    int decryptedMessageLen;
+    bool success;
+
+    // If the server just closed the connection without responding with anything,
+    // there's no point in proceeding any further trying to parse it.
+    if (rawMessageLen == 0) {
+        return false;
+    }
+
+    if (encryptedRtspEnabled) {
+        PENC_RTSP_HEADER encryptedMessage;
+        uint32_t seq;
+        uint32_t typeAndLen;
+        uint32_t len;
+        uint8_t iv[12] = { 0 };
+
+        if (rawMessageLen <= (int)sizeof(ENC_RTSP_HEADER)) {
+            Limelog("RTSP encrypted header too small\n");
+            return false;
+        }
+
+        encryptedMessage = (PENC_RTSP_HEADER)rawMessage;
+        typeAndLen = BE32(encryptedMessage->typeAndLength);
+
+        if (!(typeAndLen & ENCRYPTED_RTSP_BIT)) {
+            Limelog("Rejecting unencrypted RTSP message\n");
+            return false;
+        }
+
+        len = typeAndLen & ~ENCRYPTED_RTSP_BIT;
+        if (len + sizeof(ENC_RTSP_HEADER) > (uint32_t)rawMessageLen) {
+            Limelog("Rejecting partial encrypted RTSP message\n");
+            return false;
+        }
+        else if (len + sizeof(ENC_RTSP_HEADER) < (uint32_t)rawMessageLen) {
+            Limelog("Rejecting encrypted RTSP message with excess data\n");
+            return false;
+        }
+
+        // Populate the IV in little endian byte order
+        seq = BE32(encryptedMessage->sequenceNumber);
+        iv[3] = (uint8_t)(seq >> 24);
+        iv[2] = (uint8_t)(seq >> 16);
+        iv[1] = (uint8_t)(seq >> 8);
+        iv[0] = (uint8_t)(seq >> 0);
+
+        // Set high bytes to something unique to ensure no IV collisions
+        iv[10] = (uint8_t)'H'; // Host originated
+        iv[11] = (uint8_t)'R'; // RTSP stream
+
+        decryptedMessageLen = rawMessageLen - sizeof(ENC_RTSP_HEADER);
+        decryptedMessage = (char*)malloc(decryptedMessageLen);
+        if (decryptedMessage == NULL) {
+            return false;
+        }
+
+        success = PltDecryptMessage(decryptionCtx, ALGORITHM_AES_GCM, 0,
+                                    (uint8_t*)StreamConfig.remoteInputAesKey, sizeof(StreamConfig.remoteInputAesKey),
+                                    iv, sizeof(iv),
+                                    encryptedMessage->tag, sizeof(encryptedMessage->tag),
+                                    (uint8_t*)(encryptedMessage + 1), decryptedMessageLen,
+                                    (uint8_t*)decryptedMessage, &decryptedMessageLen);
+        if (!success) {
+            Limelog("Failed to decrypt RTSP response\n");
+            free(decryptedMessage);
+            return false;
+        }
+    }
+    else {
+        decryptedMessage = rawMessage;
+        decryptedMessageLen = rawMessageLen;
+    }
+
+    if (parseRtspMessage(response, decryptedMessage, decryptedMessageLen) == RTSP_ERROR_SUCCESS) {
+        success = true;
+    }
+    else {
+        Limelog("Failed to parse RTSP response\n");
+        success = false;
+    }
+
+    if (decryptedMessage != rawMessage) {
+        free(decryptedMessage);
+    }
+
+    return success;
+}
+
 // Send RTSP message and get response over ENet
 static bool transactRtspMessageEnet(PRTSP_MESSAGE request, PRTSP_MESSAGE response, bool expectingPayload, int* error) {
     ENetEvent event;
@@ -95,6 +253,10 @@ static bool transactRtspMessageEnet(PRTSP_MESSAGE request, PRTSP_MESSAGE respons
     int payloadLength;
     bool ret;
     char* responseBuffer;
+
+    // RTSP encryption is not supported using ENet due to our special handling
+    // of the payload below. Modern versions of Sunshine use TCP for RTSP.
+    LC_ASSERT(!encryptedRtspEnabled);
 
     *error = -1;
     ret = false;
@@ -144,7 +306,7 @@ static bool transactRtspMessageEnet(PRTSP_MESSAGE request, PRTSP_MESSAGE respons
     // Wait for a reply
     if (serviceEnetHost(client, &event, RTSP_RECEIVE_TIMEOUT_SEC * 1000) <= 0 ||
         event.type != ENET_EVENT_TYPE_RECEIVE) {
-        Limelog("Failed to receive RTSP reply\n");
+        Limelog("Failed to receive RTSP reply: %d\n", LastSocketFail());
         goto Exit;
     }
 
@@ -165,7 +327,7 @@ static bool transactRtspMessageEnet(PRTSP_MESSAGE request, PRTSP_MESSAGE respons
         // The payload comes in a second packet
         if (serviceEnetHost(client, &event, RTSP_RECEIVE_TIMEOUT_SEC * 1000) <= 0 ||
             event.type != ENET_EVENT_TYPE_RECEIVE) {
-            Limelog("Failed to receive RTSP reply payload\n");
+            Limelog("Failed to receive RTSP reply payload: %d\n", LastSocketFail());
             goto Exit;
         }
 
@@ -250,7 +412,7 @@ static bool transactRtspMessageTcp(PRTSP_MESSAGE request, PRTSP_MESSAGE response
         return ret;
     }
 
-    serializedMessage = serializeRtspMessage(request, &messageLen);
+    serializedMessage = sealRtspMessage(request, &messageLen);
     if (serializedMessage == NULL) {
         closeSocket(sock);
         sock = INVALID_SOCKET;
@@ -312,13 +474,8 @@ static bool transactRtspMessageTcp(PRTSP_MESSAGE request, PRTSP_MESSAGE response
         }
     }
 
-    if (parseRtspMessage(response, responseBuffer, offset) == RTSP_ERROR_SUCCESS) {
-        // Successfully parsed response
-        ret = true;
-    }
-    else {
-        Limelog("Failed to parse RTSP response\n");
-    }
+    // Decrypt (if necessary) and deserialize the RTSP response
+    ret = unsealRtspMessage(responseBuffer, offset, response);
 
     // Fetch the local address for this socket if it's not populated yet
     if (LocalAddr.ss_family == 0) {
@@ -507,6 +664,11 @@ static bool sendVideoAnnounce(PRTSP_MESSAGE response, int* error) {
 static int parseOpusConfigFromParamString(char* paramStr, int channelCount, POPUS_MULTISTREAM_CONFIGURATION opusConfig) {
     int i;
 
+    if (channelCount > AUDIO_CONFIGURATION_MAX_CHANNEL_COUNT) {
+        Limelog("Invalid channel count: %d\n", channelCount);
+        return -1;
+    }
+
     // Set channel count (included in the prefix, so not parsed below)
     opusConfig->channelCount = channelCount;
 
@@ -603,6 +765,7 @@ static int parseOpusConfigurations(PRTSP_MESSAGE response) {
             // Parse the normal quality Opus config
             err = parseOpusConfigFromParamString(paramStart, channelCount, &NormalQualityOpusConfig);
             if (err != 0) {
+                LC_ASSERT(err == 0);
                 return err;
             }
 
@@ -631,6 +794,7 @@ static int parseOpusConfigurations(PRTSP_MESSAGE response) {
                 // Parse the high quality Opus config
                 err = parseOpusConfigFromParamString(paramStart, channelCount, &HighQualityOpusConfig);
                 if (err != 0) {
+                    LC_ASSERT(err == 0);
                     return err;
                 }
 
@@ -774,6 +938,9 @@ int performRtspHandshake(PSERVER_INFORMATION serverInfo) {
     hasSessionId = false;
     controlStreamId = APP_VERSION_AT_LEAST(7, 1, 431) ? "streamid=control/13/0" : "streamid=control/1/0";
     AudioEncryptionEnabled = false;
+    encryptedRtspEnabled = serverInfo->rtspSessionUrl && strstr(serverInfo->rtspSessionUrl, "rtspenc://");
+    encryptionCtx = PltCreateCryptoContext();
+    decryptionCtx = PltCreateCryptoContext();
 
     // HACK: In order to get GFE to respect our request for a lower audio bitrate, we must
     // fake our target address so it doesn't match any of the PC's local interfaces. It seems
@@ -785,7 +952,7 @@ int performRtspHandshake(PSERVER_INFORMATION serverInfo) {
     // 2. The audio decoder has not declared that it is slow
     // 3. The stream is either local or not surround sound (to prevent MTU issues over the Internet)
     LC_ASSERT(StreamConfig.streamingRemotely != STREAM_CFG_AUTO);
-    if (OriginalVideoBitrate >= HIGH_AUDIO_BITRATE_THRESHOLD &&
+    if (StreamConfig.bitrate >= HIGH_AUDIO_BITRATE_THRESHOLD &&
             (AudioCallbacks.capabilities & CAPABILITY_SLOW_OPUS_DECODER) == 0 &&
             (StreamConfig.streamingRemotely != STREAM_CFG_REMOTE || CHANNEL_COUNT_FROM_AUDIO_CONFIGURATION(StreamConfig.audioConfiguration) <= 2)) {
         // If we have an RTSP URL string and it was successfully parsed and copied, use that string
@@ -851,7 +1018,7 @@ int performRtspHandshake(PSERVER_INFORMATION serverInfo) {
         // Wait for the connect to complete
         if (serviceEnetHost(client, &event, RTSP_CONNECT_TIMEOUT_SEC * 1000) <= 0 ||
             event.type != ENET_EVENT_TYPE_CONNECT) {
-            Limelog("RTSP: Failed to connect to UDP port %u\n", RtspPortNumber);
+            Limelog("RTSP: Failed to connect to UDP port %u: error %d\n", RtspPortNumber, LastSocketFail());
             enet_peer_reset(peer);
             peer = NULL;
             enet_host_destroy(client);
@@ -899,19 +1066,25 @@ int performRtspHandshake(PSERVER_INFORMATION serverInfo) {
             ret = response.message.response.statusCode;
             goto Exit;
         }
+
+        if (!response.payload) {
+            Limelog("RTSP DESCRIBE no content in response\n");
+            ret = -1;
+            goto Exit;
+        }
         
         if ((StreamConfig.supportedVideoFormats & VIDEO_FORMAT_MASK_AV1) && strstr(response.payload, "AV1/90000")) {
-            if ((serverInfo->serverCodecModeSupport & SCM_AV1_MAIN10) && (StreamConfig.supportedVideoFormats & VIDEO_FORMAT_AV1_MAIN10)) {
+            if ((serverInfo->serverCodecModeSupport & SCM_AV1_HIGH10_444) && (StreamConfig.supportedVideoFormats & VIDEO_FORMAT_AV1_HIGH10_444)) {
+                NegotiatedVideoFormat = VIDEO_FORMAT_AV1_HIGH10_444;
+            }
+            else if ((serverInfo->serverCodecModeSupport & SCM_AV1_MAIN10) && (StreamConfig.supportedVideoFormats & VIDEO_FORMAT_AV1_MAIN10)) {
                 NegotiatedVideoFormat = VIDEO_FORMAT_AV1_MAIN10;
+            }
+            else if ((serverInfo->serverCodecModeSupport & SCM_AV1_HIGH8_444) && (StreamConfig.supportedVideoFormats & VIDEO_FORMAT_AV1_HIGH8_444)) {
+                NegotiatedVideoFormat = VIDEO_FORMAT_AV1_HIGH8_444;
             }
             else {
                 NegotiatedVideoFormat = VIDEO_FORMAT_AV1_MAIN8;
-
-                // Apply bitrate adjustment for SDR AV1 if the client requested one
-                if (StreamConfig.av1BitratePercentageMultiplier != 0) {
-                    StreamConfig.bitrate *= StreamConfig.av1BitratePercentageMultiplier;
-                    StreamConfig.bitrate /= 100;
-                }
             }
         }
         else if ((StreamConfig.supportedVideoFormats & VIDEO_FORMAT_MASK_H265) && strstr(response.payload, "sprop-parameter-sets=AAAAAU")) {
@@ -921,21 +1094,26 @@ int performRtspHandshake(PSERVER_INFORMATION serverInfo) {
             // server can support HEVC. For some reason, they still set the MIME type of the HEVC
             // format to H264, so we can't just look for the HEVC MIME type. What we'll do instead is
             // look for the base 64 encoded VPS NALU prefix that is unique to the HEVC bitstream.
-            if ((serverInfo->serverCodecModeSupport & SCM_HEVC_MAIN10) && (StreamConfig.supportedVideoFormats & VIDEO_FORMAT_H265_MAIN10)) {
+            if ((serverInfo->serverCodecModeSupport & SCM_HEVC_REXT10_444) && (StreamConfig.supportedVideoFormats & VIDEO_FORMAT_H265_REXT10_444)) {
+                NegotiatedVideoFormat = VIDEO_FORMAT_H265_REXT10_444;
+            }
+            else if ((serverInfo->serverCodecModeSupport & SCM_HEVC_MAIN10) && (StreamConfig.supportedVideoFormats & VIDEO_FORMAT_H265_MAIN10)) {
                 NegotiatedVideoFormat = VIDEO_FORMAT_H265_MAIN10;
+            }
+            else if ((serverInfo->serverCodecModeSupport & SCM_HEVC_REXT8_444) && (StreamConfig.supportedVideoFormats & VIDEO_FORMAT_H265_REXT8_444)) {
+                NegotiatedVideoFormat = VIDEO_FORMAT_H265_REXT8_444;
             }
             else {
                 NegotiatedVideoFormat = VIDEO_FORMAT_H265;
-
-                // Apply bitrate adjustment for SDR HEVC if the client requested one
-                if (StreamConfig.hevcBitratePercentageMultiplier != 0) {
-                    StreamConfig.bitrate *= StreamConfig.hevcBitratePercentageMultiplier;
-                    StreamConfig.bitrate /= 100;
-                }
             }
         }
         else {
-            NegotiatedVideoFormat = VIDEO_FORMAT_H264;
+            if ((serverInfo->serverCodecModeSupport & SCM_H264_HIGH8_444) && (StreamConfig.supportedVideoFormats & VIDEO_FORMAT_H264_HIGH8_444)) {
+                NegotiatedVideoFormat = VIDEO_FORMAT_H264_HIGH8_444;
+            }
+            else {
+                NegotiatedVideoFormat = VIDEO_FORMAT_H264;
+            }
 
             // Dimensions over 4096 are only supported with HEVC on NVENC
             if (StreamConfig.width > 4096 || StreamConfig.height > 4096) {
@@ -953,6 +1131,15 @@ int performRtspHandshake(PSERVER_INFORMATION serverInfo) {
         if (!parseSdpAttributeToUInt(response.payload, "x-ss-general.featureFlags", &SunshineFeatureFlags)) {
             SunshineFeatureFlags = 0;
         }
+
+        // Look for the Sunshine encryption flags in the SDP attributes
+        if (!parseSdpAttributeToUInt(response.payload, "x-ss-general.encryptionSupported", &EncryptionFeaturesSupported)) {
+            EncryptionFeaturesSupported = 0;
+        }
+        if (!parseSdpAttributeToUInt(response.payload, "x-ss-general.encryptionRequested", &EncryptionFeaturesRequested)) {
+            EncryptionFeaturesRequested = 0;
+        }
+        EncryptionFeaturesEnabled = 0;
 
         // Parse the Opus surround parameters out of the RTSP DESCRIBE response.
         ret = parseOpusConfigurations(&response);
@@ -1079,6 +1266,7 @@ int performRtspHandshake(PSERVER_INFORMATION serverInfo) {
     if (AppVersionQuad[0] >= 5) {
         RTSP_MESSAGE response;
         int error = -1;
+        char* connectData;
 
         if (!setupStream(&response,
                          controlStreamId,
@@ -1093,6 +1281,15 @@ int performRtspHandshake(PSERVER_INFORMATION serverInfo) {
                 response.message.response.statusCode);
             ret = response.message.response.statusCode;
             goto Exit;
+        }
+
+        // Parse the Sunshine control connect data extension if present
+        connectData = getOptionContent(response.options, "X-SS-Connect-Data");
+        if (connectData != NULL) {
+            ControlConnectData = (uint32_t)strtoul(connectData, NULL, 0);
+        }
+        else {
+            ControlConnectData = 0;
         }
 
         // Parse the control port out of the RTSP SETUP response
@@ -1213,6 +1410,10 @@ Exit:
         free(sessionIdString);
         sessionIdString = NULL;
     }
+
+    PltDestroyCryptoContext(encryptionCtx);
+    PltDestroyCryptoContext(decryptionCtx);
+    decryptionCtx = encryptionCtx = NULL;
 
     return ret;
 }
