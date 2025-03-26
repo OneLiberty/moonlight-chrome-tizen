@@ -4,6 +4,15 @@ project(MoonlightWasm VERSION 1.0)
 
 add_compile_options(-w -s WASM=1 -fno-ident -Os -flto -DSAMSUNG_WRT -DOS_WASM -DNDEBUG)
 
+# Preload the CA bundle
+set(CA_BUNDLE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/static/curl/ca-bundle.crt)
+add_custom_command(
+    OUTPUT ${CA_BUNDLE_PATH}
+    COMMAND ${CMAKE_COMMAND} -E copy ${CA_BUNDLE_PATH} ${CMAKE_CURRENT_BINARY_DIR}
+)
+add_custom_target(preload_ca_bundle ALL DEPENDS ${CA_BUNDLE_PATH})
+set(EMSCRIPTEN_PRELOAD_FILES "${CA_BUNDLE_PATH}@/static/curl/ca-bundle.crt")
+
 add_library(moonlight-rs STATIC
     moonlight-common-c/reedsolomon/rs.c)
 target_include_directories(moonlight-rs PUBLIC
