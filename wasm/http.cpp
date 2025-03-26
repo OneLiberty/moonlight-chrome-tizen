@@ -3,7 +3,6 @@
 #include <errors.h>
 #include <http.h>
 #include <string.h>
-#include <sys/mount.h>
 
 #include <mkcert.h>
 #include <openssl/bio.h>
@@ -72,10 +71,7 @@ LoadResult MoonlightInstance::LoadCert(const char* certStr, const char* keyStr) 
   return LoadResult::Success;
 }
 
-MessageResult MoonlightInstance::HttpInit(std::string cert, std::string privateKey, std::string myUniqueId) {
-  // Mount resource directory where CA bundle resides
-  mount("static/curl", "/curl", "httpfs", 0, "");
-  
+MessageResult MoonlightInstance::HttpInit(std::string cert, std::string privateKey, std::string myUniqueId) { 
   LoadResult res = LoadResult::Success;
   res = LoadCert(cert.c_str(), privateKey.c_str());
   if (res == LoadResult::CertErr) {
