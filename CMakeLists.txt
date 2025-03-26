@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.10)
 
 project(MoonlightWasm VERSION 1.0)
 
-add_compile_options(-w -s WASM=1 -fno-ident -Os -flto -DSAMSUNG_WRT -DOS_WASM -DNDEBUG)
+add_compile_options(-w -s WASM=1 -fno-ident -Os -flto -DSAMSUNG_WRT -DOS_WASM -DNDEBUG -s USE_CURL=1 -s USE_SSL=1 -s FORCE_FILESYSTEM=1)
 
 # Preload the CA bundle
 set(CA_BUNDLE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/static/curl/ca-bundle.crt)
