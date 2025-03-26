@@ -10,6 +10,9 @@
 
 #include <curl/curl.h>
 
+#include <emscripten.h>
+#include <emscripten/html5.h>
+
 X509* g_Cert;
 EVP_PKEY* g_PrivateKey;
 char* g_UniqueId;
