@@ -106,7 +106,7 @@ void MoonlightInstance::OpenUrl_private(int callbackId, std::string url, std::st
     return;
   }
 
-  err = http_request(url.c_str(), ppk.c_str(), data);
+  err = http_request(url.c_str(), ppk.empty() ? NULL : ppk.c_str(), data);
   if (err) {
     http_free_data(data);
     PostPromiseMessage(callbackId, "reject", std::to_string(err));
