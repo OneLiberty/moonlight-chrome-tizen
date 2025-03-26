@@ -72,6 +72,12 @@ LoadResult MoonlightInstance::LoadCert(const char* certStr, const char* keyStr) 
 }
 
 MessageResult MoonlightInstance::HttpInit(std::string cert, std::string privateKey, std::string myUniqueId) { 
+  // Use Emscripten's virtual file system API to create the directory and preload the CA bundle
+  EM_ASM({
+      FS.mkdir('/curl');
+      FS.mount(FS.filesystems.HTTPFS, { root: '/static/curl' }, '/curl');
+  });
+  
   LoadResult res = LoadResult::Success;
   res = LoadCert(cert.c_str(), privateKey.c_str());
   if (res == LoadResult::CertErr) {
@@ -93,6 +99,9 @@ MessageResult MoonlightInstance::HttpInit(std::string cert, std::string privateK
   g_UniqueId = strdup(myUniqueId.c_str());
 
   curl_global_init(CURL_GLOBAL_DEFAULT);
+  
+  // Configure CURL to use the CA bundle - this already done in curl. Maybe not necessary here
+  curl_easy_setopt(curl, CURLOPT_CAINFO, "/curl/ca-bundle.crt");
 
   return MessageResult::Resolve();
 }
