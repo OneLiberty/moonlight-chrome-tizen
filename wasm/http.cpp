@@ -106,6 +106,11 @@ void MoonlightInstance::OpenUrl_private(int callbackId, std::string url, std::st
     return;
   }
 
+  // For launch/resume requests, append the additional query parameters
+  if (url.find("/launch?") != std::string::npos || url.find("/resume?") != std::string::npos) {
+     url += LiGetLaunchUrlQueryParameters();
+  }
+
   err = http_request(url.c_str(), ppk.empty() ? NULL : ppk.c_str(), data);
   if (err) {
     http_free_data(data);
