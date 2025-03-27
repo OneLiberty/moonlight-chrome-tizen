@@ -94,41 +94,17 @@ jobs:
 
       - name: Create GitHub Release
         id: create_release
-        uses: actions/create-release@v1.16.0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: ncipollo/release-action@v1.16.0
         with:
-          tag_name: ${{ github.ref_name }}-${{ github.run_id }}
-          release_name: "Release ${{ github.ref_name }}-${{ github.run_id }}"
-          body: |
-            # Instructions for Installing Moonlight on Your TV:
-
-            - Ensure that your TV is running on Tizen version 5.5 or higher.
-            - For a persistent installation, follow the instructions in the [README.md](https://github.com/OneLiberty/moonlight-chrome-tizen?tab=readme-ov-file#getting-started), this will require docker. 
-            - Alternatively, you can use the MoonlightUSB.zip to install it (you'll have to redo it every month):
-              - Download the MoonlightUSB.zip file.
-              - Extract the contents of the zip file to the root directory of your USB key.
-              - The structure for your USB Drive should be as follows:
-                ```
-                root/
-                ├── userwidget/
-                    ├── app.tmg
-                    ├── widget.license 
-                ```
-              - Insert the USB key into your TV's USB port.
-              - Wait for the installation process to complete. (This can take some time)
-
-            > [!NOTE] 
-            > Please note that this installation method may or may not be persistent. For a more reliable installation, it's recommended to use the Docker install method if possible.  
-            
-            ## Support and discussion.
-
-            You can support the project by donating on [BuyMeACoffee](https://buymeacoffee.com/oneliberty).
-            Discuss about the release over on the [discord server](https://discord.gg/zHafSd3bTw)! 
- 
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag: ${{ github.ref_name }}-${{ github.run_id }}
+          name: "Release ${{ github.ref_name }}-${{ github.run_id }}"
+          bodyFile: README.md
           draft: false
           prerelease: false
-
+          artifacts: Moonlight.wgt,MoonlightUSB.zip
+          replacesArtifacts: true
+          
       - name: Upload Moonlight.wgt to Release
         uses: actions/upload-release-asset@v1
         env:
