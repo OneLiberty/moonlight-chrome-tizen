@@ -102,7 +102,7 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           tag: ${{ github.ref_name }}-${{ github.run_id }}
           name: "Release ${{ github.ref_name }}-${{ github.run_id }}"
-          bodyFile: README.md
+          bodyFile: release_body.md
           draft: false
           prerelease: false
           artifacts: Moonlight.wgt,MoonlightUSB.zip
