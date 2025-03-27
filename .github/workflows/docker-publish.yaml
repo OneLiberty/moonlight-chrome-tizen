@@ -64,6 +64,9 @@ jobs:
     runs-on: ubuntu-latest
     needs: build-and-push-image
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        
       - name: Set up image tag
         run: echo "IMAGE_TAG=ghcr.io/oneliberty/moonlight-chrome-tizen:${{ github.ref_name }}" >> $GITHUB_ENV
 
