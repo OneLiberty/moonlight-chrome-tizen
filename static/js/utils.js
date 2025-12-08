@@ -485,9 +485,8 @@ NvHTTP.prototype = {
     }.bind(this));
   },
     
-  launchApp: function(appId, mode, sops, rikey, rikeyid, localAudio, surroundAudioInfo, gamepadMask) {
-    return sendMessage('openUrl', [
-      this._baseUrlHttps +
+  launchApp: function(appId, mode, sops, rikey, rikeyid, localAudio, surroundAudioInfo, gamepadMask, hdrEnabled) {
+    var url = this._baseUrlHttps +
       '/launch?' + this._buildUidStr() +
       '&appid=' + appId +
       '&mode=' + mode +
@@ -497,22 +496,29 @@ NvHTTP.prototype = {
       '&localAudioPlayMode=' + localAudio +
       '&surroundAudioInfo=' + surroundAudioInfo +
       '&remoteControllersBitmap=' + gamepadMask +
-      '&gcmap=' + gamepadMask,
-      this.ppkstr,
-      false
-    ]);
+      '&gcmap=' + gamepadMask;
+    
+    // Add HDR parameters if HDR is enabled
+    if (hdrEnabled) {
+      url += '&hdrMode=1&clientHdrCapVersion=0&clientHdrCapSupportedFlagsInUint32=0&clientHdrCapMetaDataId=NV_STATIC_METADATA_TYPE_1&clientHdrCapDisplayData=0x0x0x0x0x0x0x0x0x0x0';
+    }
+    
+    return sendMessage('openUrl', [url, this.ppkstr, false]);
   },
 
-  resumeApp: function(rikey, rikeyid, surroundAudioInfo) {
-    return sendMessage('openUrl', [
-      this._baseUrlHttps +
+  resumeApp: function(rikey, rikeyid, surroundAudioInfo, hdrEnabled) {
+    var url = this._baseUrlHttps +
       '/resume?' + this._buildUidStr() +
       '&rikey=' + rikey +
       '&rikeyid=' + rikeyid +
-      '&surroundAudioInfo=' + surroundAudioInfo,
-      this.ppkstr,
-      false
-    ]);
+      '&surroundAudioInfo=' + surroundAudioInfo;
+    
+    // Add HDR parameters if HDR is enabled
+    if (hdrEnabled) {
+      url += '&hdrMode=1&clientHdrCapVersion=0&clientHdrCapSupportedFlagsInUint32=0&clientHdrCapMetaDataId=NV_STATIC_METADATA_TYPE_1&clientHdrCapDisplayData=0x0x0x0x0x0x0x0x0x0x0';
+    }
+    
+    return sendMessage('openUrl', [url, this.ppkstr, false]);
   },
 
   quitApp: function() {
