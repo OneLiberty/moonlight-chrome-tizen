@@ -819,7 +819,8 @@ function startGame(host, appID) {
 
       if (host.currentGame == appID) { // if user wants to launch the already-running app, then we resume it.
         return host.resumeApp(
-          rikey, rikeyid, 0x030002 // Surround channel mask << 16 | Surround channel count
+          rikey, rikeyid, 0x030002, // Surround channel mask << 16 | Surround channel count
+          hdrEnabled
         ).then(function(launchResult) {
           $xml = $($.parseXML(launchResult.toString()));
           $root = $xml.find('root');
@@ -862,7 +863,8 @@ function startGame(host, appID) {
         rikey, rikeyid,
         remote_audio_enabled, // Play audio locally too?
         0x030002, // Surround channel mask << 16 | Surround channel count
-        gamepadMask
+        gamepadMask,
+        hdrEnabled
       ).then(function(launchResult) {
         $xml = $($.parseXML(launchResult.toString()));
         $root = $xml.find('root');
