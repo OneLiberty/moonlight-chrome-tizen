@@ -56,7 +56,7 @@ RUN ./emsdk activate latest-fastcomp
 WORKDIR ../..
 
 # Build moonlight
-RUN git clone -b fix/hdr-enabler https://github.com/zenaror/moonlight-chrome-tizen
+#RUN git clone https://github.com/OneLiberty/moonlight-chrome-tizen
 COPY --chown=moonlight . ./moonlight-chrome-tizen
 
 RUN cmake \
