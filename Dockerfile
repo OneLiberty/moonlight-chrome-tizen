@@ -27,9 +27,9 @@ WORKDIR /home/moonlight
 
 
 # Install Tizen Studio
-RUN wget -nv -O web-cli_Tizen_Studio_6.0_ubuntu-64.bin 'https://download.tizen.org/sdk/Installer/tizen-studio_6.0/web-cli_Tizen_Studio_6.0_ubuntu-64.bin'
-RUN chmod a+x web-cli_Tizen_Studio_6.0_ubuntu-64.bin
-RUN ./web-cli_Tizen_Studio_6.0_ubuntu-64.bin --accept-license --no-java-check /home/moonlight/tizen-studio
+RUN wget -nv -O web-cli_Tizen_Studio_6.1_ubuntu-64.bin 'https://download.tizen.org/sdk/Installer/tizen-studio_6.1/web-cli_Tizen_Studio_6.1_ubuntu-64.bin'
+RUN chmod a+x web-cli_Tizen_Studio_6.1_ubuntu-64.bin
+RUN ./web-cli_Tizen_Studio_6.1_ubuntu-64.bin --accept-license --no-java-check /home/moonlight/tizen-studio
 ENV PATH=/home/moonlight/tizen-studio/tools/ide/bin:/home/moonlight/tizen-studio/tools:${PATH}
 
 # Prepare Tizen signing certificates
@@ -80,13 +80,12 @@ RUN echo \
 | expect
 RUN mv build/widget/Moonlight.wgt .
 
-# Clone and install wgt-to-usb
-RUN git clone https://github.com/fingerartur/wgt-to-usb.git
-RUN cd /home/moonlight/wgt-to-usb/ && npm install wgt-to-usb
+# Extract the WGT manually (wgt = zip)
+RUN mkdir -p /home/moonlight/userwidget \
+    && unzip /home/moonlight/Moonlight.wgt -d /home/moonlight/userwidget
 
-# Package the application for USB installation
-RUN npm exec wgt-to-usb /home/moonlight/Moonlight.wgt
-RUN cd /home/moonlight/ && zip -r MoonlightUSB.zip ./userwidget
+# Package the extracted widget into a USB installable ZIP
+RUN cd /home/moonlight && zip -r MoonlightUSB.zip userwidget
 
 # Remove unnecessary files
 RUN rm -rf \
@@ -95,7 +94,7 @@ RUN rm -rf \
     emscripten-release-bundle \
     moonlight-chrome-tizen \
     tizen-package-expect.sh \
-    web-cli_Tizen_Studio_6.0_ubuntu-64.bin \
+    web-cli_Tizen_Studio_6.1_ubuntu-64.bin \
     .emscripten_cache \
     .emscripten_cache.lock \
     .emscripten_ports \
