@@ -25,6 +25,7 @@ RUN useradd -m -s /bin/bash moonlight
 USER moonlight
 WORKDIR /home/moonlight
 
+
 # Install Tizen Studio
 RUN wget -nv -O web-cli_Tizen_Studio_6.1_ubuntu-64.bin 'https://download.tizen.org/sdk/Installer/tizen-studio_6.1/web-cli_Tizen_Studio_6.1_ubuntu-64.bin'
 RUN chmod a+x web-cli_Tizen_Studio_6.1_ubuntu-64.bin
