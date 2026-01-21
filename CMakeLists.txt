@@ -92,6 +92,16 @@ target_include_directories(h264bitstream PUBLIC
     h264bitstream)
 target_compile_features(h264bitstream PUBLIC c_std_99)
 
+set(OPUS_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+set(OPUS_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
+set(OPUS_BUILD_SHARED_LIBRARY OFF CACHE BOOL "" FORCE)
+set(OPUS_BUILD_STATIC_LIBRARY ON CACHE BOOL "" FORCE)
+
+set(OPUS_DISABLE_FLOAT_API ON CACHE BOOL "" FORCE)
+set(OPUS_FIXED_POINT ON CACHE BOOL "" FORCE)
+set(OPUS_USE_ALLOCA OFF CACHE BOOL "" FORCE)
+set(OPUS_USE_CONFIG_H OFF CACHE BOOL "" FORCE)
+
 add_subdirectory(opus)
 
 target_compile_definitions(opus PUBLIC
