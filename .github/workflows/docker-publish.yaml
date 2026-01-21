@@ -68,35 +68,31 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        
+  
+      # WICHTIG: Workspace aufräumen, damit keine alten Dateien verwendet werden
+      - name: Clean workspace
+        run: rm -f Moonlight.wgt MoonlightUSB.zip
+  
       - name: Set up image tag
         run: echo "IMAGE_TAG=ghcr.io/oneliberty/moonlight-chrome-tizen:${{ github.ref_name }}" >> $GITHUB_ENV
-
+  
       - name: Run Docker container
         run: docker run -d --name temp_container $IMAGE_TAG
-
+  
       - name: Copy artifacts from Docker container
         run: |
-          docker cp temp_container:/home/moonlight/Moonlight.wgt . && docker cp temp_container:/home/moonlight/MoonlightUSB.zip .
-
+          docker cp temp_container:/home/moonlight/Moonlight.wgt .
+          docker cp temp_container:/home/moonlight/MoonlightUSB.zip .
+  
       - name: Stop and remove Docker container
         run: |
-          docker stop temp_container && docker rm temp_container
-
-      - name: Upload artifact Moonlight.wgt
-        uses: actions/upload-artifact@v4
-        with:
-          name: Moonlight.wgt
-          path: Moonlight.wgt
-          retention-days: 0
-
-      - name: Upload artifact MoonlightUSB.zip
-        uses: actions/upload-artifact@v4
-        with:
-          name: MoonlightUSB.zip
-          path: MoonlightUSB.zip
-          retention-days: 0
-
+          docker stop temp_container
+          docker rm temp_container
+  
+      # OPTIONAL: Debug, um sicherzugehen, dass die Dateien wirklich da sind
+      - name: Debug workspace
+        run: ls -alh .
+  
       - name: Create GitHub Release
         id: create_release
         uses: ncipollo/release-action@v1.16.0
