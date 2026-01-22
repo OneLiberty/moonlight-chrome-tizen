@@ -143,10 +143,6 @@
 #ifndef NO_MSGAPI
 #define NO_MSGAPI 1
 #endif
-#elif defined(__HAIKU__)
-#ifndef HAS_POLL
-#define HAS_POLL 1
-#endif
 #else
 #ifndef HAS_IOCTL
 #define HAS_IOCTL 1
@@ -168,7 +164,7 @@
 #include <poll.h>
 #endif
 
-#if !defined(HAS_SOCKLEN_T) && !defined(__socklen_t_defined) && !defined(__HAIKU__)
+#if !defined(HAS_SOCKLEN_T) && !defined(__socklen_t_defined)
 typedef int socklen_t;
 #endif
 
@@ -230,16 +226,16 @@ enet_address_make_v4mapped (ENetAddress * address)
     ENetAddress oldAddress = *address;
     struct sockaddr_in *sin = ((struct sockaddr_in *)&oldAddress.address);
     struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)&address->address;
-
+    
     memset(sin6, 0, sizeof(*sin6));
     sin6->sin6_family = AF_INET6;
     sin6->sin6_len = sizeof(*sin6);
     sin6->sin6_port = sin->sin_port;
-
+    
     sin6->sin6_addr.s6_addr[10] = 0xFF;
     sin6->sin6_addr.s6_addr[11] = 0xFF;
     memcpy(&sin6->sin6_addr.s6_addr[12], &sin->sin_addr, 4);
-
+    
     address->addressLength = sizeof(*sin6);
 }
 #endif
@@ -367,45 +363,12 @@ enet_socket_listen (ENetSocket socket, int backlog)
 ENetSocket
 enet_socket_create (int af, ENetSocketType type)
 {
-    ENetSocket sock = socket (af, type == ENET_SOCKET_TYPE_DATAGRAM ? SOCK_DGRAM : SOCK_STREAM, 0);
-    if (sock < 0) {
-        return sock;
-    }
-
-#ifdef IPV6_V6ONLY
-    if (af == AF_INET6) {
-        int off = 0;
-
-        // Some OSes don't support dual-stack sockets, so ignore failures
-        setsockopt(sock, IPPROTO_IPV6, IPV6_V6ONLY, (char *)&off, sizeof(off));
-    }
+        int sock_flags = 0;
+#if defined(__EMSCRIPTEN__)
+    // Workaround - cannot set created socket to non blocking mode
+    sock_flags = SOCK_NONBLOCK;
 #endif
-
-#ifdef IP_PKTINFO
-    {
-        // We turn this on for all sockets because it may be required for IPv4
-        // traffic on dual-stack sockets on some OSes.
-        int on = 1;
-        setsockopt(sock, IPPROTO_IP, IP_PKTINFO, (char *)&on, sizeof(on));
-    }
-#endif
-
-#ifdef IPV6_RECVPKTINFO
-    if (af == AF_INET6) {
-        int on = 1;
-        setsockopt(sock, IPPROTO_IPV6, IPV6_RECVPKTINFO, (char *)&on, sizeof(on));
-    }
-#endif
-
-#ifdef __WIIU__
-    {
-        // Enable usage of userbuffers on Wii U
-        int on = 1;
-        setsockopt(sock, SOL_SOCKET, SO_RUSRBUF, (char *)&on, sizeof(on));
-    }
-#endif
-
-    return sock;
+    return socket (af, (type == ENET_SOCKET_TYPE_DATAGRAM ? SOCK_DGRAM : SOCK_STREAM) | sock_flags, 0);
 }
 
 int
@@ -415,6 +378,7 @@ enet_socket_set_option (ENetSocket socket, ENetSocketOption option, int value)
     switch (option)
     {
         case ENET_SOCKOPT_NONBLOCK:
+#if !defined(__EMSCRIPTEN__)
 #ifdef HAS_FCNTL
             result = fcntl (socket, F_SETFL, (value ? O_NONBLOCK : 0) | (fcntl (socket, F_GETFL) & ~O_NONBLOCK));
 #else
@@ -422,6 +386,7 @@ enet_socket_set_option (ENetSocket socket, ENetSocketOption option, int value)
             result = ioctl (socket, FIONBIO, & value);
 #else
             result = setsockopt (socket, SOL_SOCKET, SO_NONBLOCK, (char *) & value, sizeof(int));
+#endif
 #endif
 #endif
             break;
@@ -467,15 +432,15 @@ enet_socket_set_option (ENetSocket socket, ENetSocketOption option, int value)
             // iOS/macOS
             value = value ? NET_SERVICE_TYPE_VO : NET_SERVICE_TYPE_BE;
             result = setsockopt (socket, SOL_SOCKET, SO_NET_SERVICE_TYPE, (char *) & value, sizeof (int));
-#endif
+#else
 #ifdef IP_TOS
             // UNIX - IPv4
-            value = value ? (46 << 2 | 0x01) : 0; // DSCP: Expedited Forwarding + ECT(1) (L4S)
+            value = value ? 46 << 2 : 0; // DSCP: Expedited Forwarding
             result = setsockopt (socket, IPPROTO_IP, IP_TOS, (char *) & value, sizeof (int));
 #endif
 #ifdef IPV6_TCLASS
             // UNIX - IPv6
-            value = value ? (46 << 2 | 0x01): 0; // DSCP: Expedited Forwarding + ECT(1) (L4S)
+            value = value ? 46 << 2: 0; // DSCP: Expedited Forwarding
             result = setsockopt (socket, IPPROTO_IPV6, IPV6_TCLASS, (char *) & value, sizeof (int));
 #endif
 #ifdef SO_PRIORITY
@@ -483,6 +448,7 @@ enet_socket_set_option (ENetSocket socket, ENetSocketOption option, int value)
             value = value ? 6 : 0; // Max priority without NET_CAP_ADMIN
             result = setsockopt (socket, SOL_SOCKET, SO_PRIORITY, (char *) & value, sizeof (int));
 #endif
+#endif /* SO_NET_SERVICE_TYPE */
             break;
 
         case ENET_SOCKOPT_TTL:
@@ -666,26 +632,17 @@ enet_socket_send (ENetSocket socket,
 
     if (sentLength == -1)
     {
-        switch (errno)
-        {
-        case EWOULDBLOCK:
-            return 0;
+#if defined(__EMSCRIPTEN__)
+// Temporary workaround - with newer Emscripten, errno codes are not
+// compatible with POSIX ones
+// TODO(j.gajownik2) Define mapping errno mapping WASI -> POSIX
+       if (errno == __WASI_ERRNO_AGAIN)
+#else
+       if (errno == EWOULDBLOCK)
+#endif
+         return 0;
 
-        // These errors are treated as possible transient
-        // conditions that could be caused by a network
-        // interruption. We'll ignore them and allow the
-        // socket timeout to kill us if the connection
-        // is permanently interrupted.
-        case EADDRNOTAVAIL:
-        case ENETDOWN:
-        case ENETUNREACH:
-        case EHOSTDOWN:
-        case EHOSTUNREACH:
-            return 0;
-
-        default:
-            return -1;
-        }
+       return -1;
     }
 
     return sentLength;
@@ -709,7 +666,14 @@ enet_socket_receive (ENetSocket socket,
 
     if (recvLength == -1)
     {
+#if defined(__EMSCRIPTEN__)
+// Temporary workaround - with newer Emscripten, errno codes are not
+// compatible with POSIX ones
+// TODO(j.gajownik2) Define mapping errno mapping WASI -> POSIX
+       if (errno == __WASI_ERRNO_AGAIN)
+#else
        if (errno == EWOULDBLOCK)
+#endif
          return 0;
 
        return -1;
@@ -737,7 +701,14 @@ enet_socket_receive (ENetSocket socket,
 
     if (recvLength == -1)
     {
+#if defined(__EMSCRIPTEN__)
+// Temporary workaround - with newer Emscripten, errno codes are not
+// compatible with POSIX ones
+// TODO(j.gajownik2) Define mapping errno mapping WASI -> POSIX
+       if (errno == __WASI_ERRNO_AGAIN)
+#else
        if (errno == EWOULDBLOCK)
+#endif
          return 0;
 
        return -1;
@@ -779,7 +750,7 @@ enet_socket_receive (ENetSocket socket,
 
     if (peerAddress != NULL) {
         peerAddress -> addressLength = msgHdr.msg_namelen;
-
+        
 #ifdef __APPLE__
         // HACK: Apple platforms return AF_INET addresses in msg_name from recvmsg() on dual-stack sockets
         // instead of AF_INET6 addresses then rejects those same addresses when they are passed to sendmsg().
@@ -822,18 +793,7 @@ enet_socket_wait (ENetSocket socket, enet_uint32 * condition, enet_uint32 timeou
     if (* condition & ENET_SOCKET_WAIT_RECEIVE)
       pollSocket.events |= POLLIN;
 
-#if defined(__3DS__)
-    uint64_t poll_start = osGetTime();
-    for (uint64_t i = poll_start; (i - poll_start) < timeout; i = osGetTime()) {
-        pollCount = poll(& pollSocket, 1, 0); // need to do this on 3ds since poll will block even if socket is ready before
-        if (pollCount) {
-            break;
-        }
-        svcSleepThread(1000);
-    }
-#else
     pollCount = poll (& pollSocket, 1, timeout);
-#endif
 
     if (pollCount < 0)
     {

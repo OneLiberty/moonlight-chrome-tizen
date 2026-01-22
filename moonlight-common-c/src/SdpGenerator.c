@@ -190,8 +190,8 @@ static int addGen5Options(PSDP_OPTION* head) {
         // RI encryption is always enabled
         featureFlags = NVFF_BASE | NVFF_RI_ENCRYPTION;
 
-        // Enable audio encryption if the client opted in or the host required it
-        if ((StreamConfig.encryptionFlags & ENCFLG_AUDIO) || (EncryptionFeaturesEnabled & SS_ENC_AUDIO)) {
+        // Enable audio encryption if the client opted in
+        if (StreamConfig.encryptionFlags & ENCFLG_AUDIO) {
             featureFlags |= NVFF_AUDIO_ENCRYPTION;
             AudioEncryptionEnabled = true;
         }
@@ -258,7 +258,7 @@ static PSDP_OPTION getAttributesList(char*urlSafeAddr) {
     int audioChannelCount;
     int audioChannelMask;
     int err;
-    int adjustedBitrate;
+    int bitrate;
 
     // This must have been resolved to either local or remote by now
     LC_ASSERT(StreamConfig.streamingRemotely != STREAM_CFG_AUTO);
@@ -266,49 +266,11 @@ static PSDP_OPTION getAttributesList(char*urlSafeAddr) {
     optionHead = NULL;
     err = 0;
 
+    // Send client feature flags to Sunshine hosts
     if (IS_SUNSHINE()) {
-        // Send client feature flags to Sunshine hosts
-        uint32_t moonlightFeatureFlags = ML_FF_FEC_STATUS | ML_FF_SESSION_ID_V1;
+        uint32_t moonlightFeatureFlags = ML_FF_FEC_STATUS;
         snprintf(payloadStr, sizeof(payloadStr), "%u", moonlightFeatureFlags);
         err |= addAttributeString(&optionHead, "x-ml-general.featureFlags", payloadStr);
-
-        // New-style control stream encryption is low overhead, so we enable it any time it is supported
-        if (EncryptionFeaturesSupported & SS_ENC_CONTROL_V2) {
-            EncryptionFeaturesEnabled |= SS_ENC_CONTROL_V2;
-        }
-
-        // If video encryption is supported by the host and desired by the client, use it
-        if ((EncryptionFeaturesSupported & SS_ENC_VIDEO) && (StreamConfig.encryptionFlags & ENCFLG_VIDEO)) {
-            EncryptionFeaturesEnabled |= SS_ENC_VIDEO;
-        }
-        else if ((EncryptionFeaturesRequested & SS_ENC_VIDEO) && !(StreamConfig.encryptionFlags & ENCFLG_VIDEO)) {
-            // If video encryption is explicitly requested by the host but *not* by the client,
-            // we'll encrypt anyway (since we are capable of doing so) and print a warning.
-            Limelog("Enabling video encryption by host request despite client opt-out. Performance may suffer!");
-            EncryptionFeaturesEnabled |= SS_ENC_VIDEO;
-        }
-
-        // If audio encryption is supported by the host and desired by the client, use it
-        if ((EncryptionFeaturesSupported & SS_ENC_AUDIO) && (StreamConfig.encryptionFlags & ENCFLG_AUDIO)) {
-            EncryptionFeaturesEnabled |= SS_ENC_AUDIO;
-        }
-        else if ((EncryptionFeaturesRequested & SS_ENC_AUDIO) && !(StreamConfig.encryptionFlags & ENCFLG_AUDIO)) {
-            // If audio encryption is explicitly requested by the host but *not* by the client,
-            // we'll encrypt anyway (since we are capable of doing so) and print a warning.
-            Limelog("Enabling audio encryption by host request despite client opt-out. Audio quality may suffer!");
-            EncryptionFeaturesEnabled |= SS_ENC_AUDIO;
-        }
-
-        snprintf(payloadStr, sizeof(payloadStr), "%u", EncryptionFeaturesEnabled);
-        err |= addAttributeString(&optionHead, "x-ss-general.encryptionEnabled", payloadStr);
-
-        // Enable YUV444 if requested
-        if (NegotiatedVideoFormat & VIDEO_FORMAT_MASK_YUV444) {
-            err |= addAttributeString(&optionHead, "x-ss-video[0].chromaSamplingType", "1");
-        }
-        else {
-            err |= addAttributeString(&optionHead, "x-ss-video[0].chromaSamplingType", "0");
-        }
     }
 
     snprintf(payloadStr, sizeof(payloadStr), "%d", StreamConfig.width);
@@ -319,12 +281,6 @@ static PSDP_OPTION getAttributesList(char*urlSafeAddr) {
     snprintf(payloadStr, sizeof(payloadStr), "%d", StreamConfig.fps);
     err |= addAttributeString(&optionHead, "x-nv-video[0].maxFPS", payloadStr);
 
-    // Adjust the video packet size to account for encryption overhead
-    if (EncryptionFeaturesEnabled & SS_ENC_VIDEO) {
-        LC_ASSERT(StreamConfig.packetSize % 16 == 0);
-        StreamConfig.packetSize -= sizeof(ENC_VIDEO_HEADER);
-        LC_ASSERT(StreamConfig.packetSize % 16 == 0);
-    }
     snprintf(payloadStr, sizeof(payloadStr), "%d", StreamConfig.packetSize);
     err |= addAttributeString(&optionHead, "x-nv-video[0].packetSize", payloadStr);
 
@@ -333,43 +289,44 @@ static PSDP_OPTION getAttributesList(char*urlSafeAddr) {
     err |= addAttributeString(&optionHead, "x-nv-video[0].timeoutLengthMs", "7000");
     err |= addAttributeString(&optionHead, "x-nv-video[0].framesWithInvalidRefThreshold", "0");
 
-    // 20% of the video bitrate will added to the user-specified bitrate for FEC
-    adjustedBitrate = (int)(StreamConfig.bitrate * 0.80);
-
     // Use more strict bitrate logic when streaming remotely. The theory here is that remote
     // streaming is much more bandwidth sensitive. Someone might select 5 Mbps because that's
     // really all they have, so we need to be careful not to exceed the cap, even counting
     // things like audio and control data.
     if (StreamConfig.streamingRemotely == STREAM_CFG_REMOTE) {
+        // 20% of the video bitrate will added to the user-specified bitrate for FEC
+        bitrate = (int)(OriginalVideoBitrate * 0.80);
+
         // Subtract 500 Kbps to leave room for audio and control. On remote streams,
         // GFE will use 96Kbps stereo audio. For local streams, it will choose 512Kbps.
-        if (adjustedBitrate > 500) {
-            adjustedBitrate -= 500;
+        if (bitrate > 500) {
+            bitrate -= 500;
         }
     }
+    else {
+        bitrate = StreamConfig.bitrate;
+    }
+
+    // If the calculated bitrate (with the HEVC multiplier in effect) is less than this,
+    // use the lower of the two bitrate values.
+    bitrate = StreamConfig.bitrate < bitrate ? StreamConfig.bitrate : bitrate;
 
     // GFE currently imposes a limit of 100 Mbps for the video bitrate. It will automatically
     // impose that on maximumBitrateKbps but not on initialBitrateKbps. We will impose the cap
     // ourselves so initialBitrateKbps does not exceed maximumBitrateKbps.
-    adjustedBitrate = adjustedBitrate > 100000 ? 100000 : adjustedBitrate;
+    bitrate = bitrate > 100000 ? 100000 : bitrate;
 
     // We don't support dynamic bitrate scaling properly (it tends to bounce between min and max and never
     // settle on the optimal bitrate if it's somewhere in the middle), so we'll just latch the bitrate
     // to the requested value.
     if (AppVersionQuad[0] >= 5) {
-        snprintf(payloadStr, sizeof(payloadStr), "%d", adjustedBitrate);
+        snprintf(payloadStr, sizeof(payloadStr), "%d", bitrate);
 
         err |= addAttributeString(&optionHead, "x-nv-video[0].initialBitrateKbps", payloadStr);
         err |= addAttributeString(&optionHead, "x-nv-video[0].initialPeakBitrateKbps", payloadStr);
 
         err |= addAttributeString(&optionHead, "x-nv-vqos[0].bw.minimumBitrateKbps", payloadStr);
         err |= addAttributeString(&optionHead, "x-nv-vqos[0].bw.maximumBitrateKbps", payloadStr);
-
-        // Send the configured bitrate to Sunshine hosts, so they can adjust for dynamic FEC percentage
-        if (IS_SUNSHINE()) {
-            snprintf(payloadStr, sizeof(payloadStr), "%u", StreamConfig.bitrate);
-            err |= addAttributeString(&optionHead, "x-ml-video.configuredBitrateKbps", payloadStr);
-        }
     }
     else {
         if (StreamConfig.streamingRemotely == STREAM_CFG_REMOTE) {
@@ -377,7 +334,7 @@ static PSDP_OPTION getAttributesList(char*urlSafeAddr) {
             err |= addAttributeString(&optionHead, "x-nv-video[0].peakBitrate", "4");
         }
 
-        snprintf(payloadStr, sizeof(payloadStr), "%d", adjustedBitrate);
+        snprintf(payloadStr, sizeof(payloadStr), "%d", bitrate);
         err |= addAttributeString(&optionHead, "x-nv-vqos[0].bw.minimumBitrate", payloadStr);
         err |= addAttributeString(&optionHead, "x-nv-vqos[0].bw.maximumBitrate", payloadStr);
     }
@@ -490,7 +447,8 @@ static PSDP_OPTION getAttributesList(char*urlSafeAddr) {
     }
 
     if (AppVersionQuad[0] >= 7) {
-        if (StreamConfig.bitrate >= HIGH_AUDIO_BITRATE_THRESHOLD && audioChannelCount > 2 &&
+        // Decide to use HQ audio based on the original video bitrate, not the HEVC-adjusted value
+        if (OriginalVideoBitrate >= HIGH_AUDIO_BITRATE_THRESHOLD && audioChannelCount > 2 &&
                 HighQualitySurroundSupported && (AudioCallbacks.capabilities & CAPABILITY_SLOW_OPUS_DECODER) == 0) {
             // Enable high quality mode for surround sound
             err |= addAttributeString(&optionHead, "x-nv-audio.surround.AudioQuality", "1");
@@ -508,7 +466,7 @@ static PSDP_OPTION getAttributesList(char*urlSafeAddr) {
 
             if ((AudioCallbacks.capabilities & CAPABILITY_SLOW_OPUS_DECODER) ||
                      ((AudioCallbacks.capabilities & CAPABILITY_SUPPORTS_ARBITRARY_AUDIO_DURATION) != 0 &&
-                       StreamConfig.bitrate < LOW_AUDIO_BITRATE_TRESHOLD)) {
+                       OriginalVideoBitrate < LOW_AUDIO_BITRATE_TRESHOLD)) {
                 // Use 10 ms packets for slow devices and networks to balance latency and bandwidth usage
                 AudioPacketDuration = 10;
             }

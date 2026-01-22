@@ -535,10 +535,6 @@ static void submitCompletedFrame(PRTP_VIDEO_QUEUE queue) {
     }
 }
 
-uint32_t RtpvGetCurrentFrameNumber(PRTP_VIDEO_QUEUE queue) {
-    return queue->currentFrameNumber;
-}
-
 int RtpvAddPacket(PRTP_VIDEO_QUEUE queue, PRTP_PACKET packet, int length, PRTPV_QUEUE_ENTRY packetEntry) {
     if (isBefore16(packet->sequenceNumber, queue->nextContiguousSequenceNumber)) {
         // Reject packets behind our current buffer window

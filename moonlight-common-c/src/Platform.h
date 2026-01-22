@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <emscripten.h>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -31,9 +32,6 @@
 #include <coreinit/thread.h>
 #include <coreinit/fastmutex.h>
 #include <coreinit/fastcondition.h>
-#include <fcntl.h>
-#elif defined(__3DS__)
-#include <3ds.h>
 #include <fcntl.h>
 #else
 #include <unistd.h>
@@ -58,21 +56,28 @@
 // Windows doesn't have strtok_r() but it has the same
 // function named strtok_s().
 #define strtok_r strtok_s
-
-# if defined(WINAPI_FAMILY) && WINAPI_FAMILY==WINAPI_FAMILY_APP
-# define LC_UWP
-# else
-# define LC_WINDOWS_DESKTOP
-#endif
-
 #endif
 
 #include <stdio.h>
 #include "Limelight.h"
 
-#define Limelog(s, ...) \
-    if (ListenerCallbacks.logMessage) \
-        ListenerCallbacks.logMessage(s, ##__VA_ARGS__)
+#ifdef LC_LOG
+#define Limelog(format, ...) \
+    do { \
+        if (ListenerCallbacks.logMessage) { \
+            char buf[1000]; \
+            snprintf(buf, sizeof(buf), format, ##__VA_ARGS__); \
+            ListenerCallbacks.logMessage(buf); \
+        } \
+    } while(0)
+#else
+#define Limelog(format, ...) \
+    do { \
+        if (EM_LOG_CONSOLE) { \
+            emscripten_log(EM_LOG_CONSOLE, format, ##__VA_ARGS__); \
+        } \
+    } while(0)
+#endif
 
 #if defined(LC_WINDOWS)
 #include <crtdbg.h>
