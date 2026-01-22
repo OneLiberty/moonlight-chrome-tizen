@@ -28,6 +28,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+      - name: Init submodules
+        run: git submodule update --init --recursive
       # Uses the `docker/login-action` action to log in to the Container registry using the account and password that will publish the packages. Once published, the packages are scoped to the account defined here.
       - name: Log in to the Container registry
         uses: docker/login-action@65b78e6e13532edd9afa3aa52ac7964289d1a9c1
@@ -64,87 +66,42 @@ jobs:
     runs-on: ubuntu-latest
     needs: build-and-push-image
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+  
+      # WICHTIG: Workspace aufräumen, damit keine alten Dateien verwendet werden
+      - name: Clean workspace
+        run: rm -f Moonlight.wgt MoonlightUSB.zip
+  
       - name: Set up image tag
-        run: echo "IMAGE_TAG=ghcr.io/oneliberty/moonlight-chrome-tizen:${{ github.ref_name }}" >> $GITHUB_ENV
-
+        run: echo "IMAGE_TAG=${{ needs.build-and-push-image.outputs.image_tag }}" >> $GITHUB_ENV
+  
       - name: Run Docker container
         run: docker run -d --name temp_container $IMAGE_TAG
-
+  
       - name: Copy artifacts from Docker container
         run: |
-          docker cp temp_container:/home/moonlight/Moonlight.wgt . && docker cp temp_container:/home/moonlight/MoonlightUSB.zip .
-
+          docker cp temp_container:/home/moonlight/Moonlight.wgt .
+          docker cp temp_container:/home/moonlight/MoonlightUSB.zip .
+  
       - name: Stop and remove Docker container
         run: |
-          docker stop temp_container && docker rm temp_container
-
-      - name: Upload artifact Moonlight.wgt
-        uses: actions/upload-artifact@v4
-        with:
-          name: Moonlight.wgt
-          path: Moonlight.wgt
-          retention-days: 0
-
-      - name: Upload artifact MoonlightUSB.zip
-        uses: actions/upload-artifact@v4
-        with:
-          name: MoonlightUSB.zip
-          path: MoonlightUSB.zip
-          retention-days: 0
-
+          docker stop temp_container
+          docker rm temp_container
+  
+      # OPTIONAL: Debug, um sicherzugehen, dass die Dateien wirklich da sind
+      - name: Debug workspace
+        run: ls -alh .
+  
       - name: Create GitHub Release
         id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: ncipollo/release-action@v1.16.0
         with:
-          tag_name: ${{ github.ref_name }}-${{ github.run_id }}
-          release_name: "Release ${{ github.ref_name }}-${{ github.run_id }}"
-          body: |
-            # Instructions for Installing Moonlight on Your TV:
-
-            - Ensure that your TV is running on Tizen version 5.5 or higher.
-            - For a persistent installation, follow the instructions in the [README.md](https://github.com/OneLiberty/moonlight-chrome-tizen?tab=readme-ov-file#getting-started), this will require docker. 
-            - Alternatively, you can use the MoonlightUSB.zip to install it (you'll have to redo it every month):
-              - Download the MoonlightUSB.zip file.
-              - Extract the contents of the zip file to the root directory of your USB key.
-              - The structure for your USB Drive should be as follows:
-                ```
-                root/
-                ├── userwidget/
-                    ├── app.tmg
-                    ├── widget.license 
-                ```
-              - Insert the USB key into your TV's USB port.
-              - Wait for the installation process to complete. (This can take some time)
-
-            > [!NOTE] 
-            > Please note that this installation method may or may not be persistent. For a more reliable installation, it's recommended to use the Docker install method if possible.  
-            
-            ## Support and discussion.
-
-            You can support the project by donating on [BuyMeACoffee](https://buymeacoffee.com/oneliberty).
-            Discuss about the release over on the [discord server](https://discord.gg/zHafSd3bTw)! 
- 
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag: ${{ github.ref_name }}-${{ github.run_id }}
+          name: "Release ${{ github.ref_name }}-${{ github.run_id }}"
+          bodyFile: release_body.md
           draft: false
           prerelease: false
-
-      - name: Upload Moonlight.wgt to Release
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./Moonlight.wgt
-          asset_name: Moonlight.wgt
-          asset_content_type: application/octet-stream
-
-      - name: Upload MoonlightUSB.zip to Release
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./MoonlightUSB.zip
-          asset_name: MoonlightUSB.zip
-          asset_content_type: application/octet-stream
+          artifacts: Moonlight.wgt,MoonlightUSB.zip
+          replacesArtifacts: true

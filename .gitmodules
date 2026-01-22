@@ -1,0 +1,7 @@
+[submodule "opus"]
+	path = opus
+	url = https://gitlab.xiph.org/xiph/opus.git
+[submodule "moonlight-common-c"]
+	path = moonlight-common-c
+	url = https://github.com/dos-ise/moonlight-common-c.git
+	branch = samsung_wasm

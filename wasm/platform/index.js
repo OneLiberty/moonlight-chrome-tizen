@@ -797,7 +797,7 @@ function startGame(host, appID) {
       var bitrate = parseInt($("#bitrateSlider").val()) * 1000;
       const framePacingEnabled = $('#framePacingSwitch').parent().hasClass('is-checked') ? 1 : 0;
       const audioSyncEnabled = $('#audioSyncSwitch').parent().hasClass('is-checked') ? 1 : 0;
-      const hdrEnabled = $('#hdrSwitch').parent().hasClass('is-checked') ? 1 : 0;
+      const hdrEnabled = (document.getElementById('hdrSwitch') && document.getElementById('hdrSwitch').checked) ? 1 : 0;
       console.log('%c[index.js, startGame]', 'color:green;',
                   'startRequest:' + host.address +
                   ":" + streamWidth +
@@ -807,7 +807,7 @@ function startGame(host, appID) {
                   ":" + optimize +
                   ":" + framePacingEnabled,
                   ":" + audioSyncEnabled,
-                  ":" + hdrEnabled,
+                  ":" + hdrEnabled, 
                   ":" + codecVideo);
 
       var rikey = generateRemoteInputKey();
@@ -819,7 +819,8 @@ function startGame(host, appID) {
 
       if (host.currentGame == appID) { // if user wants to launch the already-running app, then we resume it.
         return host.resumeApp(
-          rikey, rikeyid, 0x030002 // Surround channel mask << 16 | Surround channel count
+          rikey, rikeyid, 0x030002, // Surround channel mask << 16 | Surround channel count
+          hdrEnabled
         ).then(function(launchResult) {
           $xml = $($.parseXML(launchResult.toString()));
           $root = $xml.find('root');
@@ -862,7 +863,8 @@ function startGame(host, appID) {
         rikey, rikeyid,
         remote_audio_enabled, // Play audio locally too?
         0x030002, // Surround channel mask << 16 | Surround channel count
-        gamepadMask
+        gamepadMask,
+        hdrEnabled
       ).then(function(launchResult) {
         $xml = $($.parseXML(launchResult.toString()));
         $root = $xml.find('root');
@@ -1148,7 +1150,19 @@ function saveFramePacing() {
 
 function saveHdr() {
   setTimeout(function() {
-    const chosenHDR = $("#hdrSwitch").parent().hasClass('is-checked');
+    const hdrInput = document.getElementById('hdrSwitch');
+    const hdrBtn = document.querySelector('#hdrBtn');
+    const chosenHDR = hdrInput ? hdrInput.checked : false;
+    
+    // Sincronizar o MaterialIconToggle com o estado do input
+    if (hdrBtn && hdrBtn.MaterialIconToggle) {
+      if (chosenHDR) {
+        hdrBtn.MaterialIconToggle.check();
+      } else {
+        hdrBtn.MaterialIconToggle.uncheck();
+      }
+    }
+    
     console.log('%c[index.js, saveHDR]', 'color: green;', 'Saving HDR state : ' + chosenHDR);
     storeData('HDR', chosenHDR, null);
   }, 100);
@@ -1335,12 +1349,17 @@ function loadUserDataCb() {
 
   console.log('load stored HDR prefs');
   getData('HDR', function(previousValue) {
+    var hdrBtn = document.querySelector('#hdrBtn');
+    var hdrInput = document.getElementById('hdrSwitch');
     if (previousValue.HDR == null) {
-      document.querySelector('#hdrBtn').MaterialIconToggle.check();
+      if (hdrBtn && hdrBtn.MaterialIconToggle) hdrBtn.MaterialIconToggle.check();
+      if (hdrInput) hdrInput.checked = true;
     } else if (previousValue.HDR == false) {
-      document.querySelector('#hdrBtn').MaterialIconToggle.uncheck();
+      if (hdrBtn && hdrBtn.MaterialIconToggle) hdrBtn.MaterialIconToggle.uncheck();
+      if (hdrInput) hdrInput.checked = false;
     } else {
-      document.querySelector('#hdrBtn').MaterialIconToggle.check();
+      if (hdrBtn && hdrBtn.MaterialIconToggle) hdrBtn.MaterialIconToggle.check();
+      if (hdrInput) hdrInput.checked = true;
     }
   });
 
