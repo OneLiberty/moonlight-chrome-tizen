@@ -54,19 +54,6 @@ set_target_properties(moonlight-common-c PROPERTIES
     COMPILE_FLAGS "-s USE_CRYPTO=1 -s USE_SSL=1"
 )
 
-#
-# libgamestream
-#
-add_library(libgamestream STATIC
-    libgamestream/http.c
-    libgamestream/mkcert.c
-    libgamestream/pairing.c
-)
-target_include_directories(libgamestream PUBLIC libgamestream)
-set_target_properties(libgamestream PROPERTIES
-    COMPILE_FLAGS "-s USE_CRYPTO=1 -s USE_SSL=1 -s USE_CURL=1"
-)
-
 # libgamestream
 add_library(libgamestream STATIC
     libgamestream/http.c
@@ -85,6 +72,7 @@ add_library(h264bitstream STATIC
     h264bitstream/h264_sei.c
     h264bitstream/h264_stream.c
 )
+
 target_include_directories(h264bitstream PUBLIC
     h264bitstream)
 target_compile_features(h264bitstream PUBLIC c_std_99)
