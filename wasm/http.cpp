@@ -10,9 +10,6 @@
 
 #include <curl/curl.h>
 
-#include <emscripten.h>
-#include <emscripten/html5.h>
-
 X509* g_Cert;
 EVP_PKEY* g_PrivateKey;
 char* g_UniqueId;
@@ -74,13 +71,7 @@ LoadResult MoonlightInstance::LoadCert(const char* certStr, const char* keyStr) 
   return LoadResult::Success;
 }
 
-MessageResult MoonlightInstance::HttpInit(std::string cert, std::string privateKey, std::string myUniqueId) { 
-  // Use Emscripten's virtual file system API to create the directory and preload the CA bundle
-  MAIN_THREAD_EM_ASM({
-      FS.mkdir('/curl');
-      FS.mount(FS.filesystems.HTTPFS, { root: '/static/curl' }, '/curl');
-  });
-  
+MessageResult MoonlightInstance::HttpInit(std::string cert, std::string privateKey, std::string myUniqueId) {
   LoadResult res = LoadResult::Success;
   res = LoadCert(cert.c_str(), privateKey.c_str());
   if (res == LoadResult::CertErr) {
@@ -115,12 +106,7 @@ void MoonlightInstance::OpenUrl_private(int callbackId, std::string url, std::st
     return;
   }
 
-  // For launch/resume requests, append the additional query parameters
-  if (url.find("/launch?") != std::string::npos || url.find("/resume?") != std::string::npos) {
-     url += LiGetLaunchUrlQueryParameters();
-  }
-
-  err = http_request(url.c_str(), ppk.empty() ? NULL : ppk.c_str(), data);
+  err = http_request(url.c_str(), ppk.c_str(), data);
   if (err) {
     http_free_data(data);
     PostPromiseMessage(callbackId, "reject", std::to_string(err));
