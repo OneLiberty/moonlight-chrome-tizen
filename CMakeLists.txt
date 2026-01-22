@@ -13,64 +13,35 @@ add_custom_command(
 add_custom_target(preload_ca_bundle ALL DEPENDS ${CA_BUNDLE_PATH})
 set(EMSCRIPTEN_PRELOAD_FILES "${CA_BUNDLE_PATH}@/static/curl/ca-bundle.crt")
 
-add_library(moonlight-rs STATIC
-    moonlight-common-c/reedsolomon/rs.c)
-target_include_directories(moonlight-rs PUBLIC
-    moonlight-common-c/reedsolomon)
-target_compile_features(moonlight-rs PUBLIC c_std_99)
+# Bring in moonlight-common-c (submodule)
+add_subdirectory(moonlight-common-c)
 
-add_library(moonlight-enet STATIC
-    moonlight-common-c/enet/callbacks.c
-    moonlight-common-c/enet/compress.c
-    moonlight-common-c/enet/host.c
-    moonlight-common-c/enet/list.c
-    moonlight-common-c/enet/packet.c
-    moonlight-common-c/enet/peer.c
-    moonlight-common-c/enet/protocol.c
-    moonlight-common-c/enet/unix.c
-)
+# Override flags for ENet (from submodule)
 target_compile_definitions(moonlight-enet PUBLIC
     LC_CHROME
     HAS_SOCKLEN_T=1
     HAS_FCNTL=1
     NO_MSGAPI=1
-    HAS_SOCKLEN_T=1)
-target_include_directories(moonlight-enet PUBLIC
-    moonlight-common-c/enet/include)
-
-add_library(moonlight-common-c STATIC
-    moonlight-common-c/src/AudioStream.c
-    moonlight-common-c/src/ByteBuffer.c
-    moonlight-common-c/src/Connection.c
-    moonlight-common-c/src/ControlStream.c
-    moonlight-common-c/src/FakeCallbacks.c
-    moonlight-common-c/src/InputStream.c
-    moonlight-common-c/src/LinkedBlockingQueue.c
-    moonlight-common-c/src/Misc.c
-    moonlight-common-c/src/Platform.c
-    moonlight-common-c/src/PlatformCrypto.c
-    moonlight-common-c/src/PlatformSockets.c
-    moonlight-common-c/src/RtpAudioQueue.c
-    moonlight-common-c/src/RtpVideoQueue.c
-    moonlight-common-c/src/RtspConnection.c
-    moonlight-common-c/src/RtspParser.c
-    moonlight-common-c/src/SdpGenerator.c
-    moonlight-common-c/src/SimpleStun.c
-    moonlight-common-c/src/VideoDepacketizer.c
-    moonlight-common-c/src/VideoStream.c
 )
-target_compile_definitions(moonlight-common-c PUBLIC
-    LC_CHROME)
-target_include_directories(moonlight-common-c PUBLIC
-    moonlight-common-c/src
-    moonlight-common-c/enet/include
-    moonlight-common-c/reedsolomon)
-target_compile_features(moonlight-common-c PUBLIC c_std_99)
-set_target_properties(moonlight-common-c
-    PROPERTIES
-        COMPILE_FLAGS
-            "-s USE_CRYPTO=1 -s USE_SSL=1")
 
+target_include_directories(moonlight-enet PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/moonlight-common-c/enet/include
+)
+
+# Override flags for Common (from submodule)
+target_compile_definitions(moonlight-common-c PUBLIC
+    LC_CHROME
+)
+target_include_directories(moonlight-common-c PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/moonlight-common-c/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/moonlight-common-c/enet/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/moonlight-common-c/reedsolomon
+)
+set_target_properties(moonlight-common-c PROPERTIES
+    COMPILE_FLAGS "-s USE_CRYPTO=1 -s USE_SSL=1"
+)
+
+# libgamestream
 add_library(libgamestream STATIC
     libgamestream/http.c
     libgamestream/mkcert.c
