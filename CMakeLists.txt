@@ -13,10 +13,14 @@ add_custom_command(
 add_custom_target(preload_ca_bundle ALL DEPENDS ${CA_BUNDLE_PATH})
 set(EMSCRIPTEN_PRELOAD_FILES "${CA_BUNDLE_PATH}@/static/curl/ca-bundle.crt")
 
-# Bring in moonlight-common-c (submodule)
-add_subdirectory(moonlight-common-c)
-
-# Override flags for ENet (from submodule)
+# ENet
+file(GLOB ENET_SRC
+    moonlight-common-c/enet/*.c
+)
+add_library(moonlight-enet STATIC ${ENET_SRC})
+target_include_directories(moonlight-enet PUBLIC
+    moonlight-common-c/enet/include
+)
 target_compile_definitions(moonlight-enet PUBLIC
     LC_CHROME
     HAS_SOCKLEN_T=1
@@ -24,21 +28,43 @@ target_compile_definitions(moonlight-enet PUBLIC
     NO_MSGAPI=1
 )
 
-target_include_directories(moonlight-enet PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/moonlight-common-c/enet/include
+# Reed-Solomon
+file(GLOB RS_SRC
+    moonlight-common-c/reedsolomon/*.c
+)
+add_library(moonlight-rs STATIC ${RS_SRC})
+target_include_directories(moonlight-rs PUBLIC
+    moonlight-common-c/reedsolomon
 )
 
-# Override flags for Common (from submodule)
+# Common
+file(GLOB COMMON_SRC
+    moonlight-common-c/src/*.c
+)
+add_library(moonlight-common-c STATIC ${COMMON_SRC})
+target_include_directories(moonlight-common-c PUBLIC
+    moonlight-common-c/src
+    moonlight-common-c/enet/include
+    moonlight-common-c/reedsolomon
+)
 target_compile_definitions(moonlight-common-c PUBLIC
     LC_CHROME
 )
-target_include_directories(moonlight-common-c PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/moonlight-common-c/src
-    ${CMAKE_CURRENT_SOURCE_DIR}/moonlight-common-c/enet/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/moonlight-common-c/reedsolomon
-)
 set_target_properties(moonlight-common-c PROPERTIES
     COMPILE_FLAGS "-s USE_CRYPTO=1 -s USE_SSL=1"
+)
+
+#
+# libgamestream
+#
+add_library(libgamestream STATIC
+    libgamestream/http.c
+    libgamestream/mkcert.c
+    libgamestream/pairing.c
+)
+target_include_directories(libgamestream PUBLIC libgamestream)
+set_target_properties(libgamestream PROPERTIES
+    COMPILE_FLAGS "-s USE_CRYPTO=1 -s USE_SSL=1 -s USE_CURL=1"
 )
 
 # libgamestream
