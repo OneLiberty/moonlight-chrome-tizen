@@ -84,14 +84,6 @@ RUN echo \
 
 RUN mv build/widget/Moonlight.wgt .
 
-# Clone and install wgt-to-usb
-RUN git clone https://github.com/fingerartur/wgt-to-usb.git
-RUN cd /home/moonlight/wgt-to-usb/ && npm install wgt-to-usb
-
-# Package the application for USB installation
-RUN npm exec wgt-to-usb /home/moonlight/Moonlight.wgt
-RUN cd /home/moonlight/ && zip -r MoonlightUSB.zip ./userwidget
-
 # remove unneed files
 RUN rm -rf \
 	build \
