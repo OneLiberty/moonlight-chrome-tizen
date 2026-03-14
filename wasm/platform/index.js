@@ -650,6 +650,7 @@ function showApps(host) {
       snackbarLog('Your game list is empty')
       return; // We stop the function right here
     }
+    var focusSetOnFirstGame = false
     // if game grid is populated, empty it
     const sortedAppList = sortTitles(appList, 'ASC');
 
@@ -676,6 +677,11 @@ function showApps(host) {
         document.querySelector('#game-grid').appendChild(gameCard);
         // apply CSS stylization to indicate whether the app is active
         stylizeBoxArt(host, app.id);
+        if (focusSetOnFirstGame === false) {
+          focusSetOnFirstGame = true;
+          navigateGameCards(1); //Select the first game in the app list
+          Navigation.change(Views.Apps); //Put the focus on the app list
+		}
       }
       var img = new Image();
       host.getBoxArt(app.id).then(function(resolvedPromise) {
