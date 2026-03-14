@@ -17,5 +17,6 @@
     <tizen:privilege name="http://tizen.org/privilege/mediastorage"/>
     <tizen:privilege name="http://tizen.org/privilege/fullscreen"/>
     <tizen:metadata key="http://samsung.com/tv/metadata/use.voiceguide" value="false" />
+    <tizen:metadata key="http://samsung.com/tv/metadata/floating.navigation" value="false"/>
     <tizen:setting pointing-device-support='enable' screen-orientation="landscape" context-menu="enable" background-support="disable" encryption="disable" install-location="auto" hwkey-event="enable"/>
 </widget>
