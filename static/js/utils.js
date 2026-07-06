@@ -560,7 +560,7 @@ NvHTTP.prototype = {
   },
 
   sendWOL: function() {
-    snackbarLogLong('Sending WOL request to ' + this.hostname + ' with mac address ' + this.macAddress);
+    snackbarLogLong(t('status.wolRequest', { host: this.hostname, mac: this.macAddress }));
     return sendMessage('wakeOnLan', [this.macAddress]);
   },
 };

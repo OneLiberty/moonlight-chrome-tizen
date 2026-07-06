@@ -116,7 +116,8 @@ const Views = {
         'optimizeGamesBtn',
         'framePacingBtn',
         'audioSyncBtn',
-        'hdrBtn'
+        'hdrBtn',
+        'selectLanguage'
       ];
     }),
     left: function () { this.view.prev() },
@@ -219,6 +220,23 @@ const Views = {
     down: function () { this.view.next() },
     accept: function () { this.view.current().click(); showRestartMoonlightDialog(); },
     back: function () { document.getElementById('selectCodecVideo').click() },
+    enter: function () { mark(this.view.current()) },
+    leave: function () { unmark(this.view.current()) },
+  },
+  SelectLanguageMenu: {
+    isActive: function () { return isPopupActive('languageMenu') },
+    view: new ListView(function () {
+      return document
+        .getElementById('languageMenu')
+        .parentNode
+        .children[1]
+        .children[1]
+        .children
+    }),
+    up: function () { this.view.prev() },
+    down: function () { this.view.next() },
+    accept: function () { this.view.current().click() },
+    back: function () { document.getElementById('selectLanguage').click() },
     enter: function () { mark(this.view.current()) },
     leave: function () { unmark(this.view.current()) },
   },

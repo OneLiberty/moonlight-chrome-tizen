@@ -4,6 +4,9 @@
     <tizen:application id="MoonLtDev1.MoonlightWasm" package="MoonLtDev1" required_version="5.5" launch_mode="caller"/>
     <content src="index.html"/>
     <description>Moonlight Game Streaming</description>
+    <description xml:lang="en">Moonlight Game Streaming</description>
+    <description xml:lang="pt-br">Moonlight - Transmissão de jogos</description>
+    <description xml:lang="es">Moonlight - Transmisión de juegos</description>
     <feature name="http://tizen.org/feature/screen.size.all"/>
     <icon src="./icon.png"/>
     <name>Moonlight Dev</name>

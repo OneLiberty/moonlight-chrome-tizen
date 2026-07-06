@@ -36,6 +36,7 @@ function attachListeners() {
   $('#audioSyncSwitch').on('click', saveAudioSync);
   $('#hdrSwitch').on('click', saveHdr);
   $('.codecVideoMenu li').on('click', saveCodecVideo);
+  $('.languageMenu li').on('click', saveLanguage);
   $('#addHostCell').on('click', addHost);
   $('#backIcon').on('click', showHostsAndSettingsMode);
   $('#quitCurrentApp').on('click', stopGameWithConfirmation);
@@ -52,6 +53,7 @@ function attachListeners() {
   registerMenu('selectResolution', Views.SelectResolutionMenu);
   registerMenu('selectFramerate', Views.SelectFramerateMenu);
   registerMenu('bandwidthMenu', Views.SelectBitrateMenu);
+  registerMenu('selectLanguage', Views.SelectLanguageMenu);
 
   Controller.startWatching();
   window.addEventListener('gamepadbuttonpressed', (e) => {
@@ -108,7 +110,7 @@ function loadWindowState() {
 function changeUiModeForNaClLoad() {
   $('#main-navigation').children().hide();
   $("#main-content").children().not("#listener, #naclSpinner").hide();
-  $('#naclSpinnerMessage').text('Loading Moonlight plugin...');
+  $('#naclSpinnerMessage').text(t('status.loadingPlugin'));
   $('#naclSpinner').css('display', 'inline-block');
 }
 
@@ -256,7 +258,7 @@ function pairTo(nvhttpHost, onSuccess, onFailure) {
   }
 
   if (!pairingCert) {
-    snackbarLog('ERROR: cert has not been generated yet. Is NaCl initialized?');
+    snackbarLog(t('error.certNotGenerated'));
     console.warn('%c[index.js]', 'color: green;', 'User wants to pair, and we still have no cert. Problem = very yes.');
     onFailure();
     return;
@@ -264,7 +266,7 @@ function pairTo(nvhttpHost, onSuccess, onFailure) {
 
   nvhttpHost.pollServer(function(ret) {
     if (!nvhttpHost.online) {
-      snackbarLog('Failed to connect to ' + nvhttpHost.hostname + '! Ensure Sunshine is running on your host PC or GameStream is enabled in GeForce Experience SHIELD settings.');
+      snackbarLog(t('error.failedConnect', { host: nvhttpHost.hostname }));
       console.error('%c[index.js]', 'color: green;', 'Host declared as offline:', nvhttpHost, nvhttpHost.toString()); //Logging both the object and the toString version for text logs
       onFailure();
       return;
@@ -277,7 +279,7 @@ function pairTo(nvhttpHost, onSuccess, onFailure) {
 
     var randomNumber = String("0000" + (Math.random() * 10000 | 0)).slice(-4);
     var pairingDialog = document.querySelector('#pairingDialog');
-    $('#pairingDialogText').html('Please enter the following PIN on the target PC:  ' + randomNumber + '<br><br>If your host PC is running Sunshine, navigate to the Sunshine web UI to enter the PIN.<br>Alternatively, navigate to the GeForce Experience (NVIDIA GPUs only) to enter the PIN.<br><br>This dialog will close once the pairing is complete.');
+    $('#pairingDialogText').html(t('dialog.pairing.bodyPin', { pin: randomNumber }));
     pairingDialog.close();
     pairingDialog.showModal();
     Navigation.push(Views.PairingDialog);
@@ -290,16 +292,16 @@ function pairTo(nvhttpHost, onSuccess, onFailure) {
 
     console.log('%c[index.js]', 'color: green;', 'Sending pairing request to ' + nvhttpHost.hostname + ' with PIN: ' + randomNumber);
     nvhttpHost.pair(randomNumber).then(function() {
-      snackbarLog('Pairing successful');
+      snackbarLog(t('status.pairingSuccess'));
       pairingDialog.close();
       Navigation.pop();
       onSuccess();
     }, function(failedPairing) {
-      snackbarLog('Failed pairing to: ' + nvhttpHost.hostname);
+      snackbarLog(t('error.pairingFailed', { host: nvhttpHost.hostname }));
       if (nvhttpHost.currentGame != 0) {
-        $('#pairingDialogText').html('Error: ' + nvhttpHost.hostname + ' is busy.  Stop streaming to pair.');
+        $('#pairingDialogText').html(t('error.hostBusy', { host: nvhttpHost.hostname }));
       } else {
-        $('#pairingDialogText').html('Error: failed to pair with ' + nvhttpHost.hostname + '.');
+        $('#pairingDialogText').html(t('error.pairFailedHost', { host: nvhttpHost.hostname }));
       }
       console.log('%c[index.js]', 'color: green;', 'Failed API object:', nvhttpHost, nvhttpHost.toString()); //Logging both the object and the toString version for text logs
       onFailure();
@@ -391,7 +393,7 @@ function addHost() {
       $('#continueAddHost').prop('disabled', false); // re-enable the button on success
     }.bind(this),
     function(failure) {
-      snackbarLog('Failed to connect to ' + _nvhttpHost.hostname + '! Ensure Sunshine is running on your host PC or GameStream is enabled in GeForce Experience SHIELD settings.');
+      snackbarLog(t('error.failedConnect', { host: _nvhttpHost.hostname }));
       $('#continueAddHost').prop('disabled', false); // re-enable the button on failure
     }.bind(this));
   });
@@ -420,7 +422,7 @@ function addHostToGrid(host, ismDNSDiscovered) {
     id: "hostSettingsButton-" + host.serverUid,
     role: 'button',
     tabindex: 0,
-    'aria-label': 'Settings ' + host.hostname
+    'aria-label': t('host.settingsTitle', { host: host.hostname })
   });
 
   var settingsDialog = $('<dialog>', {
@@ -430,7 +432,7 @@ function addHostToGrid(host, ismDNSDiscovered) {
 
   $('<h4>', {
     class: 'mdl-dialog__title',
-    text: 'Settings ' + host.hostname
+    text: t('host.settingsTitle', { host: host.hostname })
   }).appendTo(settingsDialog);
 
   var dialogContent = $('<div>', {
@@ -438,10 +440,10 @@ function addHostToGrid(host, ismDNSDiscovered) {
   }).appendTo(settingsDialog);
 
   var options = [ // host settings dialog options, used an array to make it easier to add more options
-    { text: 'Wake PC (WOL)', id: "wake-" + host.hostname, action: function () {host.sendWOL(); } },
+    { text: t('host.wakeWol'), id: "wake-" + host.hostname, action: function () {host.sendWOL(); } },
     // { text: 'Show hidden Apps (WIP)', id: "showHiddenApps-" + host.hostname, action: null }, //TODO: implement this
-    { text: 'Refresh box art', id: "refreshBoxArt-" + host.hostname, action: function () {host.purgeBoxArt(); } },
-    { text: 'Remove ' + host.hostname, id: "remove-" + host.hostname, action: function () {removeClicked(host); } }
+    { text: t('host.refreshBoxArt'), id: "refreshBoxArt-" + host.hostname, action: function () {host.purgeBoxArt(); } },
+    { text: t('host.remove', { host: host.hostname }), id: "remove-" + host.hostname, action: function () {removeClicked(host); } }
   ];
 
   options.forEach(function (option) {
@@ -461,7 +463,7 @@ function addHostToGrid(host, ismDNSDiscovered) {
   $('<button>', {
     type: 'button',
     class: 'mdl-button',
-    text: 'Close',
+    text: t('common.close'),
     id: 'closeSettingsDialog'
   }).click(function () {
     settingsDialog[0].close();
@@ -503,7 +505,7 @@ function addHostToGrid(host, ismDNSDiscovered) {
 function removeClicked(host) {
   var deleteHostDialog = document.querySelector('#deleteHostDialog');
   document.getElementById('deleteHostDialogText').innerHTML =
-    ' Are you sure you want to delete ' + host.hostname + '?';
+    t('dialog.deleteHost.bodyHost', { host: host.hostname });
   deleteHostDialog.showModal();
   Navigation.push(Views.DeleteHostDialog);
 
@@ -586,10 +588,10 @@ function stylizeBoxArt(freshApi, appIdToStylize) {
   var el = document.querySelector("#game-" + appIdToStylize);
   if(freshApi.currentGame === appIdToStylize) {
     el.classList.add('current-game')
-    el.title += ' (Running)'
+    el.title += t('app.runningSuffix')
   } else {
     el.classList.remove('current-game')
-    el.title.replace(' (Running)', '') // TODO: Replace with localized string so make it e.title = game_title
+    el.title.replace(t('app.runningSuffix'), '') // TODO: Replace with localized string so make it e.title = game_title
   }
 }
 
@@ -633,7 +635,7 @@ function showApps(host) {
   $("#gameList .game-container").remove();
 
   // Show a spinner while the applist loads
-  $('#naclSpinnerMessage').text('Loading apps...');
+  $('#naclSpinnerMessage').text(t('status.loadingApps'));
   $('#naclSpinner').css('display', 'inline-block');
 
   $("div.game-container").remove();
@@ -647,7 +649,7 @@ function showApps(host) {
       var img = new Image()
       img.src = 'static/res/applist_empty.svg'
       $('#game-grid').html(img)
-      snackbarLog('Your game list is empty')
+      snackbarLog(t('error.emptyGameList'))
       return; // We stop the function right here
     }
     // if game grid is populated, empty it
@@ -692,7 +694,7 @@ function showApps(host) {
     var img = new Image();
     img.src = 'static/res/applist_error.svg'
     $("#game-grid").html(img)
-    snackbarLog('Unable to retrieve your games')
+    snackbarLog(t('error.retrieveGames'))
     console.error('%c[index.js, showApps]', 'Failed to get applist from host: ' + host.hostname, '\n Host object:', host, host.toString());
   });
 
@@ -759,8 +761,7 @@ function startGame(host, appID) {
         host.getAppById(host.currentGame).then(function(currentApp) {
           var quitAppDialog = document.querySelector('#quitAppDialog');
           document.getElementById('quitAppDialogText').innerHTML =
-            currentApp.title + ' is already running. Would you like to quit ' +
-            currentApp.title + '?';
+            t('dialog.quitApp.bodyRunning', { app: currentApp.title });
           quitAppDialog.showModal();
           Navigation.push(Views.CloseAppDialog);
           $('#cancelQuitApp').off('click');
@@ -814,7 +815,7 @@ function startGame(host, appID) {
       var rikeyid = generateRemoteInputKeyId();
       var gamepadMask = getConnectedGamepadMask();
 
-      $('#loadingMessage').text('Starting ' + appToStart.title + '...');
+      $('#loadingMessage').text(t('status.startingApp', { app: appToStart.title }));
       playGameMode();
 
       if (host.currentGame == appID) { // if user wants to launch the already-running app, then we resume it.
@@ -825,7 +826,7 @@ function startGame(host, appID) {
           $root = $xml.find('root');
 
           if ($root.attr('status_code') != 200) {
-            snackbarLog('Error ' + $root.attr('status_code') + ': ' + $root.attr('status_message'));
+            snackbarLog(t('error.launchStatus', { code: $root.attr('status_code'), message: $root.attr('status_message') }));
             showApps(host);
             return;
           }
@@ -868,7 +869,7 @@ function startGame(host, appID) {
         $root = $xml.find('root');
 
         if ($root.attr('status_code') != 200) {
-          snackbarLog('Error ' + $root.attr('status_code') + ': ' + $root.attr('status_message'));
+          snackbarLog(t('error.launchStatus', { code: $root.attr('status_code'), message: $root.attr('status_message') }));
           showApps(host);
           return;
         }
@@ -966,13 +967,12 @@ function fullscreenNaclModule() {
 
 function stopGameWithConfirmation() {
   if (api.currentGame === 0) {
-    snackbarLog('Nothing was running');
+    snackbarLog(t('error.nothingRunning'));
   } else {
     api.getAppById(api.currentGame).then(function(currentGame) {
       var quitAppDialog = document.querySelector('#quitAppDialog');
       document.getElementById('quitAppDialogText').innerHTML =
-        ' Are you sure you want to quit ' +
-        currentGame.title + '?  All unsaved data will be lost.';
+        t('dialog.quitApp.bodyConfirm', { app: currentGame.title });
       quitAppDialog.showModal();
       Navigation.push(Views.CloseAppDialog);
       $('#cancelQuitApp').off('click');
@@ -1003,11 +1003,11 @@ function stopGame(host, callbackFunction) {
   host.refreshServerInfo().then(function(ret) {
     host.getAppById(host.currentGame).then(function(runningApp) {
       if (!runningApp) {
-        snackbarLog('Nothing was running');
+        snackbarLog(t('error.nothingRunning'));
         return;
       }
       var appName = runningApp.title;
-      snackbarLog('Stopping ' + appName);
+      snackbarLog(t('status.stoppingApp', { app: appName }));
       host.quitApp().then(function(ret2) {
         host.refreshServerInfo().then(function(ret3) { // refresh to show no app is currently running.
           showApps(host);
@@ -1189,6 +1189,15 @@ function saveCodecVideo() {
   $('#selectCodecVideo').text($(this).text()).data('value', chosenCodecVideo);
   storeData('codecVideo', chosenCodecVideo, null);
   Navigation.pop();
+}
+
+function saveLanguage() {
+  var chosenLanguage = $(this).data('value');
+  // Persist synchronously and reload so every string (markup and JS) is
+  // re-rendered in the chosen language on the next boot.
+  I18n.save(chosenLanguage);
+  Navigation.pop();
+  window.location.reload();
 }
 
 function saveAudioSync() {
