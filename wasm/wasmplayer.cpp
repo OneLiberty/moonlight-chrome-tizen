@@ -1,8 +1,10 @@
 #include "moonlight_wasm.hpp"
 
+#include <chrono>
 #include <condition_variable>
 #include <functional>
 #include <mutex>
+#include <thread>
 
 #include <h264_stream.h>
 
@@ -46,15 +48,38 @@ static std::chrono::time_point<std::chrono::steady_clock> s_firstAppend;
 static std::chrono::time_point<std::chrono::steady_clock> s_lastTime;
 static bool s_hasFirstFrame = false;
 
+// Set to true if the one-time media pipeline setup failed (e.g. the TV never
+// opened the source or a track could not be added). VidDecSetup uses this to
+// fail the connection cleanly instead of feeding packets into a dead pipeline.
+static bool s_VideoSetupFailed = false;
+
+// How long to wait for each media pipeline state transition before giving up.
+static constexpr std::chrono::milliseconds kSetupTimeout{10000};
+
 MoonlightInstance::SourceListener::SourceListener(
     MoonlightInstance* instance)
   : m_Instance(instance) {}
 
 void MoonlightInstance::SourceListener::OnSourceClosed() {
   ClLogMessage("EMSS::OnClosed\n");
-  std::unique_lock<std::mutex> lock(m_Instance->m_Mutex);
-  m_Instance->m_EmssReadyState = EmssReadyState::kClosed;
-  m_Instance->m_EmssStateChanged.notify_all();
+  bool wasStreaming;
+  {
+    std::unique_lock<std::mutex> lock(m_Instance->m_Mutex);
+    m_Instance->m_EmssReadyState = EmssReadyState::kClosed;
+    m_Instance->m_EmssStateChanged.notify_all();
+    // Only treat this as unexpected if video was actually playing. During
+    // normal setup the source legitimately reaches the closed state, and
+    // during a user-requested stop m_Running is already false.
+    wasStreaming = m_Instance->m_VideoStarted.load() && m_Instance->m_Running;
+  }
+  // If the source closes while we're still streaming, the TV media pipeline
+  // died unexpectedly (decoder error, HDR switch, etc). Instead of leaving a
+  // frozen black screen that forces a TV reboot, ask the front end to tear the
+  // stream down and return to the menu.
+  if (wasStreaming) {
+    ClLogMessage("EMSS closed during active stream, notifying front end\n");
+    PostToJs(std::string("streamError"));
+  }
 }
 
 void MoonlightInstance::SourceListener::OnSourceOpenPending() {
@@ -111,8 +136,21 @@ void MoonlightInstance::VideoTrackListener::OnTrackOpen() {
 void MoonlightInstance::VideoTrackListener::OnTrackClosed(
     samsung::wasm::ElementaryMediaTrack::CloseReason) {
   ClLogMessage("VIDEO ElementaryMediaTrack::OnTrackClosed\n");
-  std::unique_lock<std::mutex> lock(m_Instance->m_Mutex);
-  m_Instance->m_VideoStarted = false;
+  bool wasStreaming;
+  {
+    std::unique_lock<std::mutex> lock(m_Instance->m_Mutex);
+    m_Instance->m_VideoStarted = false;
+    wasStreaming = m_Instance->m_Running;
+  }
+  // If the video track closes while we're still streaming (decoder error on the
+  // TV that doesn't also close the whole source), the picture freezes with no
+  // other event to react to. Ask the front end to tear down and return to the
+  // menu instead of leaving a frozen black screen. During a normal stop
+  // m_Running is already false, so this won't fire spuriously.
+  if (wasStreaming) {
+    ClLogMessage("Video track closed during active stream, notifying front end\n");
+    PostToJs(std::string("streamError"));
+  }
 }
 
 void MoonlightInstance::VideoTrackListener::OnSessionIdChanged(
@@ -138,9 +176,13 @@ int MoonlightInstance::StartupVidDecSetup(int videoFormat, int width,
 int height, int redrawRate, void* context, int drFlags) {
   g_Instance->m_MediaElement.SetSrc(&g_Instance->m_Source);
   ClLogMessage("Waiting for closed\n");
-  g_Instance->WaitFor(&g_Instance->m_EmssStateChanged, [] {
+  if (!g_Instance->WaitForTimeout(&g_Instance->m_EmssStateChanged, [] {
       return g_Instance->m_EmssReadyState == EmssReadyState::kClosed;
-  });
+  }, kSetupTimeout)) {
+    ClLogMessage("Timed out waiting for source to close\n");
+    s_VideoSetupFailed = true;
+    return -1;
+  }
   ClLogMessage("closed done\n");
 
   {
@@ -155,6 +197,10 @@ int height, int redrawRate, void* context, int drFlags) {
     if (add_track_result) {
       g_Instance->m_AudioTrack = std::move(*add_track_result);
       g_Instance->m_AudioTrack.SetListener(&g_Instance->m_AudioTrackListener);
+    } else {
+      ClLogMessage("Failed to add audio track\n");
+      s_VideoSetupFailed = true;
+      return -1;
     }
   }
 
@@ -173,6 +219,7 @@ int height, int redrawRate, void* context, int drFlags) {
     }
     else {
       ClLogMessage("Cannot select mime type for videoFormat=0x%x\n", videoFormat);
+      s_VideoSetupFailed = true;
       return -1;
     }
 
@@ -189,14 +236,22 @@ int height, int redrawRate, void* context, int drFlags) {
     if (add_track_result) {
       g_Instance->m_VideoTrack = std::move(*add_track_result);
       g_Instance->m_VideoTrack.SetListener(&g_Instance->m_VideoTrackListener);
+    } else {
+      ClLogMessage("Failed to add video track\n");
+      s_VideoSetupFailed = true;
+      return -1;
     }
   }
 
   ClLogMessage("Inb4 source open\n");
   g_Instance->m_Source.Open([](EmssOperationResult){});
-  g_Instance->WaitFor(&g_Instance->m_EmssStateChanged, [] {
+  if (!g_Instance->WaitForTimeout(&g_Instance->m_EmssStateChanged, [] {
       return g_Instance->m_EmssReadyState == EmssReadyState::kOpenPending;
-  });
+  }, kSetupTimeout)) {
+    ClLogMessage("Timed out waiting for source open pending\n");
+    s_VideoSetupFailed = true;
+    return -1;
+  }
   ClLogMessage("Source ready to open\n");
   g_Instance->m_MediaElement.Play([](EmssOperationResult err) {
     if (err != EmssOperationResult::kSuccess) {
@@ -207,11 +262,19 @@ int height, int redrawRate, void* context, int drFlags) {
   });
 
   ClLogMessage("Waiting for start\n");
-  g_Instance->WaitFor(&g_Instance->m_EmssAudioStateChanged,
-                      [] { return g_Instance->m_AudioStarted.load(); });
+  if (!g_Instance->WaitForTimeout(&g_Instance->m_EmssAudioStateChanged,
+                      [] { return g_Instance->m_AudioStarted.load(); }, kSetupTimeout)) {
+    ClLogMessage("Timed out waiting for audio track to start\n");
+    s_VideoSetupFailed = true;
+    return -1;
+  }
 
-  g_Instance->WaitFor(&g_Instance->m_EmssVideoStateChanged,
-                      [] { return g_Instance->m_VideoStarted.load(); });
+  if (!g_Instance->WaitForTimeout(&g_Instance->m_EmssVideoStateChanged,
+                      [] { return g_Instance->m_VideoStarted.load(); }, kSetupTimeout)) {
+    ClLogMessage("Timed out waiting for video track to start\n");
+    s_VideoSetupFailed = true;
+    return -1;
+  }
   ClLogMessage("started\n");
   return 0;
 }
@@ -236,6 +299,10 @@ int redrawRate, void* context, int drFlags) {
   static std::once_flag once_flag;
   std::call_once(once_flag, &MoonlightInstance::StartupVidDecSetup,
   videoFormat, width, height, redrawRate, context, drFlags);
+  if (s_VideoSetupFailed) {
+    ClLogMessage("Video pipeline setup failed, aborting connection\n");
+    return -1;
+  }
   return DR_OK;
 }
 
@@ -277,6 +344,9 @@ int MoonlightInstance::VidDecSubmitDecodeUnit(PDECODE_UNIT decodeUnit) {
     TimeStamp fromStart = now - s_firstAppend;
 
     while (s_pktPts > fromStart - s_ptsDiff + kFrameTimeMargin) {
+      // Yield instead of busy-spinning so we don't peg a CPU core on the TV's
+      // weak ARM chip (which would steal cycles from the decoder and stutter).
+      std::this_thread::sleep_for(std::chrono::microseconds(200));
       now = std::chrono::steady_clock::now();
       fromStart = now - s_firstAppend;
     }
@@ -317,6 +387,13 @@ void MoonlightInstance::WaitFor(std::condition_variable* variable,
 std::function<bool()> condition) {
   std::unique_lock<std::mutex> lock(m_Mutex);
   variable->wait(lock, condition);
+}
+
+bool MoonlightInstance::WaitForTimeout(std::condition_variable* variable,
+std::function<bool()> condition, std::chrono::milliseconds timeout) {
+  std::unique_lock<std::mutex> lock(m_Mutex);
+  // Returns true if the predicate is satisfied, false if the timeout elapsed.
+  return variable->wait_for(lock, timeout, condition);
 }
 
 DECODER_RENDERER_CALLBACKS MoonlightInstance::s_DrCallbacks = {

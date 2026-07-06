@@ -27,6 +27,11 @@
 
 #define MSG_OPENURL "openUrl"
 
+// Interval between input polls (gamepad + mouse), in milliseconds. Lower =
+// less input lag at the cost of slightly more CPU. 2ms (~500Hz) suits
+// low-latency wired play; raise it if CPU usage becomes a problem.
+#define INPUT_POLL_INTERVAL_MS 2
+
 MoonlightInstance* g_Instance;
 
 MoonlightInstance::MoonlightInstance()
@@ -126,8 +131,7 @@ void* MoonlightInstance::InputThreadFunc(void* context) {
     me->PollGamepads();
     me->ReportMouseMovement();
 
-    // Poll every 5 ms
-    usleep(5 * 1000);
+    usleep(INPUT_POLL_INTERVAL_MS * 1000);
   }
 
   return NULL;
@@ -183,8 +187,7 @@ bool audioSync, bool hdrEnabled, std::string codecVideo, std::string serverCodec
   PostToJs("Setting stream fps to: " + fps);
   PostToJs("Setting stream host to: " + host);
   PostToJs("Setting stream bitrate to: " + bitrate);
-  PostToJs("Setting rikey to: " + rikey);
-  PostToJs("Setting rikeyid to: " + rikeyid);
+  // Do not log rikey/rikeyid: they are the remote-input AES key and IV.
   PostToJs("Setting appversion to: " + appversion);
   PostToJs("Setting gfeversion to: " + gfeversion);
   PostToJs("Setting RTSP url to: " + rtspurl);
@@ -267,8 +270,10 @@ std::string address, std::string randomNumber) {
 
   printf("pair address: %s result: %d\n", address.c_str(), err);
   if (err == 0) {
-    free(ppkstr);
+    // Post the message before freeing: reading ppkstr after free() is a
+    // use-after-free that could send garbage or crash during pairing.
     PostPromiseMessage(callbackId, "resolve", ppkstr);
+    free(ppkstr);
   } else {
     PostPromiseMessage(callbackId, "reject", std::to_string(err));
   }
@@ -315,6 +320,7 @@ int main(int argc, char** argv) {
     std::cout << "RAND_bytes failed\n";
   }
   RAND_seed(buffer, 128);
+  return 0;
 }
 MessageResult startStream(std::string host, std::string width,
 std::string height, std::string fps, std::string bitrate, std::string rikey,

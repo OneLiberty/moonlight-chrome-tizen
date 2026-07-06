@@ -900,9 +900,39 @@ function startGame(host, appID) {
   });
 }
 
+// Connection watchdog: if the stream never reports "Connection Established"
+// within the timeout (e.g. the WASM media pipeline hangs), abort and return to
+// the menu instead of leaving the user on a frozen black screen that would
+// otherwise require rebooting the TV.
+let streamWatchdogTimer = null;
+const STREAM_WATCHDOG_TIMEOUT = 30000;
+
+function startStreamWatchdog() {
+  clearStreamWatchdog();
+  streamWatchdogTimer = setTimeout(function() {
+    streamWatchdogTimer = null;
+    console.error('%c[index.js, watchdog]', 'color: red;', 'Connection not established in time; aborting stream.');
+    snackbarLogLong('Connection timed out. Returning to menu.');
+    try { sendMessage('stopRequest', []); } catch (e) {}
+    if (api) {
+      showApps(api);
+    } else {
+      showHostsAndSettingsMode();
+    }
+  }, STREAM_WATCHDOG_TIMEOUT);
+}
+
+function clearStreamWatchdog() {
+  if (streamWatchdogTimer) {
+    clearTimeout(streamWatchdogTimer);
+    streamWatchdogTimer = null;
+  }
+}
+
 function playGameMode() {
   console.log('%c[index.js, playGameMode]', 'color:green;', 'Entering play game mode');
   isInGame = true;
+  startStreamWatchdog();
 
   $("#main-navigation").hide();
   $("#main-content").children().not("#listener, #loadingSpinner").hide();
@@ -1462,4 +1492,25 @@ window.addEventListener('gamepaddisconnected', function (event) {
   console.log('%c[index.js, gamepaddisconnected] gamepad disconnected: ' +
     JSON.stringify(event.gamepad),
     event.gamepad);
+});
+
+// When the app is sent to the background (the user switches to another TV app,
+// e.g. YouTube), Tizen tears down our media pipeline. Trying to resume it on
+// return typically leaves a frozen black screen that needs a TV reboot. So if
+// we are streaming when the app is backgrounded, stop the stream cleanly and
+// return to the menu. Coming back then shows the menu instead of a black
+// screen, and since the game is still running on the host the user can just
+// re-launch it to resume.
+document.addEventListener('visibilitychange', function () {
+  if (document.hidden && isInGame) {
+    console.log('%c[index.js, visibility]', 'color: orange;',
+      'App backgrounded during stream; stopping to avoid a black screen on return.');
+    clearStreamWatchdog();
+    try { sendMessage('stopRequest', []); } catch (e) {}
+    if (api) {
+      showApps(api);
+    } else {
+      showHostsAndSettingsMode();
+    }
+  }
 });

@@ -69,6 +69,8 @@ var handlePromiseMessage = function(callbackId, type, msg) {
 function handleMessage(msg) {
   console.log('%c[messages.js, handleMessage]', 'color:gray;', 'Message data: ', msg);
   if (msg.indexOf('streamTerminated: ') === 0) { // if it's a recognized event, notify the appropriate function
+    // The stream ended, so cancel the connection watchdog.
+    clearStreamWatchdog();
     // Release our keep awake request
     if (runningOnChrome()) {
       chrome.power.releaseKeepAwake();
@@ -87,7 +89,21 @@ function handleMessage(msg) {
       // Return to app list anyway
       showApps(api);
     });
+  } else if (msg === 'streamError') {
+    // The media pipeline died unexpectedly mid-stream (reported by the WASM
+    // module). Tear the stream down and return to the menu so the user does
+    // not end up stuck on a frozen black screen needing a TV reboot.
+    clearStreamWatchdog();
+    snackbarLogLong('Stream interrupted. Returning to menu.');
+    try { sendMessage('stopRequest', []); } catch (e) {}
+    if (typeof api !== 'undefined' && api) {
+      showApps(api);
+    } else {
+      showHostsAndSettingsMode();
+    }
   } else if (msg === 'Connection Established') {
+    // Connection is up, so cancel the connection watchdog.
+    clearStreamWatchdog();
     $('#loadingSpinner').css('display', 'none');
     $('body').css('backgroundColor', 'transparent');
     $("#nacl_module").css("display", "");
