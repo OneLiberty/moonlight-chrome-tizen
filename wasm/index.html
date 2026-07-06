@@ -129,6 +129,10 @@
       </div>
     </header>
     <main id="main-content" class="mdl-layout__content">
+      <!-- DEV build indicator. Lives inside #main-content so it is shown on the
+           menus and automatically hidden during gameplay (playGameMode hides
+           the main-content children). -->
+      <div id="devBadge">DEV</div>
       <div id="host-grid">
         <div class="add-host-card mdl-card mdl-shadow--4dp" id="addHostCell">
           <div class="mdl-card__title mdl-card--expand" id="addHostIcon" role="link" tabindex="0" aria-label="Add Host">

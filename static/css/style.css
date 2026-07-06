@@ -350,3 +350,23 @@ main {
     width: 100%; 
 }
 }
+/* DEV build indicator: red corner ribbon shown on the menus (hidden during
+   gameplay because it lives inside #main-content). */
+#devBadge {
+    position: fixed;
+    top: 24px;
+    left: -36px;
+    width: 150px;
+    text-align: center;
+    background: #d32f2f;
+    color: #ffffff;
+    font-family: sans-serif;
+    font-weight: bold;
+    font-size: 18px;
+    letter-spacing: 4px;
+    padding: 6px 0;
+    transform: rotate(-45deg);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.5);
+    z-index: 99999;
+    pointer-events: none;
+}
