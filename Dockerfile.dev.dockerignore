@@ -1,0 +1,16 @@
+# Ignore file used specifically for `docker build -f Dockerfile.dev`.
+# Keeps the big toolchain archives, git data, dockerfiles and build outputs out
+# of the thin build context so each code rebuild stays small and fast, and so
+# they don't get copied into the source tree.
+.git
+web-cli_Tizen_Studio_5.6_ubuntu-64.bin
+emscripten-1.39.4.7-linux64.zip
+openssl-1.1.1d.tar.gz
+curl-7.68.0.tar.bz2
+Dockerfile
+Dockerfile.base
+Dockerfile.dev
+Dockerfile.local
+Dockerfile.dev.dockerignore
+*.wgt
+build
