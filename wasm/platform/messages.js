@@ -77,7 +77,7 @@ function handleMessage(msg) {
     // Show a termination snackbar message if the termination was unexpected
     var errorCode = parseInt(msg.replace('streamTerminated: ', ''));
     if (errorCode !== 0) {
-      snackbarLogLong("Connection terminated");
+      snackbarLogLong(t('stream.connectionTerminated'));
     }
 
     api.refreshServerInfo().then(function(ret) {
@@ -107,9 +107,9 @@ function handleMessage(msg) {
   } else if (msg === 'displayVideo') {
     $("#listener").addClass("fullscreen");
   } else if (msg.indexOf('mouseEmulation enabled') === 0) {
-    snackbarLogLong("Mouse Emulation is now enabled");
+    snackbarLogLong(t('stream.mouseEmuOn'));
   } else if (msg.indexOf('mouseEmulation disabled') === 0) {
-    snackbarLogLong("Mouse Emulation is now disabled");
+    snackbarLogLong(t('stream.mouseEmuOff'));
   } else if (msg.indexOf('controllerRumble: ') === 0) {
 	  const eventData = msg.split(' ')[1].split(',');
 	  const gamepadIdx = parseInt(eventData[0]);
