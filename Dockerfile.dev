@@ -1,0 +1,36 @@
+# Thin code layer: compiles the moonlight source on top of the prebuilt base
+# image and packages the signed widget. Rebuild this on every code change:
+#   docker build -f Dockerfile.dev -t moonlight-dev .
+# It starts FROM moonlight-base (see Dockerfile.base), so only the compile +
+# packaging runs here -- seconds/minutes, not the full toolchain setup.
+FROM moonlight-base
+
+USER moonlight
+WORKDIR /home/moonlight
+
+# Only the source is copied here (see Dockerfile.dev.dockerignore, which keeps
+# the big toolchain archives and other cruft out of this build context).
+COPY --chown=moonlight . ./moonlight-chrome-tizen
+
+RUN cmake \
+	-DCMAKE_TOOLCHAIN_FILE=/home/moonlight/emscripten-release-bundle/emsdk/fastcomp/emscripten/cmake/Modules/Platform/Emscripten.cmake \
+	-G Ninja \
+	-S moonlight-chrome-tizen \
+	-B build
+RUN cmake --build build
+RUN cmake --install build --prefix build
+
+RUN cp moonlight-chrome-tizen/icons/icon.png build/widget/
+
+# Package and sign application
+RUN echo \
+	'set timeout -1\n' \
+	'spawn tizen package -t wgt -- build/widget\n' \
+	'expect "Author password:"\n' \
+	'send -- "1234\\r"\n' \
+	'expect "Yes: (Y), No: (N) ?"\n' \
+	'send -- "N\\r"\n' \
+	'expect eof\n' \
+| expect
+
+RUN mv build/widget/*.wgt ./Moonlight-Dev.wgt

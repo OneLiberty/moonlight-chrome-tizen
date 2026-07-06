@@ -1,0 +1,84 @@
+# Base image: all the heavy, code-independent setup (Tizen Studio, Emscripten,
+# signing certs, pre-seeded/pre-built OpenSSL+cURL ports). Build this ONCE:
+#   docker build -f Dockerfile.base -t moonlight-base .
+# Then rebuild only the thin code layer with Dockerfile.dev (fast).
+# Requires these files in the repo root (all git-ignored, not part of the PR):
+#   web-cli_Tizen_Studio_5.6_ubuntu-64.bin
+#   emscripten-1.39.4.7-linux64.zip
+#   openssl-1.1.1d.tar.gz
+#   curl-7.68.0.tar.bz2
+FROM ubuntu:22.04
+
+ARG DEBIAN_FRONTEND=noninteractive
+ENV TZ=Etc/UTC
+RUN apt-get update && apt-get install -y \
+	cmake \
+	expect \
+	git \
+	ninja-build \
+	python2 \
+	unzip \
+	wget \
+	nodejs \
+	npm \
+	zip \
+	&& rm -rf /var/lib/apt/lists/*
+
+# Some of Samsung scripts make reference to python,
+# but Ubuntu only provides /usr/bin/python2.
+RUN ln -sf /usr/bin/python2 /usr/bin/python
+
+# Use a non-root user from here on
+RUN useradd -m -s /bin/bash moonlight
+USER moonlight
+WORKDIR /home/moonlight
+
+# Install Tizen Studio (use the locally provided installer instead of wget)
+COPY --chown=moonlight web-cli_Tizen_Studio_5.6_ubuntu-64.bin ./web-cli_Tizen_Studio_5.6_ubuntu-64.bin
+RUN chmod a+x web-cli_Tizen_Studio_5.6_ubuntu-64.bin
+RUN ./web-cli_Tizen_Studio_5.6_ubuntu-64.bin --accept-license /home/moonlight/tizen-studio
+ENV PATH=/home/moonlight/tizen-studio/tools/ide/bin:/home/moonlight/tizen-studio/tools:${PATH}
+
+# Prepare Tizen signing cerficates
+RUN tizen certificate \
+	-a Moonlight \
+	-f Moonlight \
+	-p 1234
+RUN tizen security-profiles add \
+	-n Moonlight \
+	-a /home/moonlight/tizen-studio-data/keystore/author/Moonlight.p12 \
+	-p 1234
+
+# Workaround to package applications without gnome-keyring
+RUN sed -i 's|/home/moonlight/tizen-studio-data/keystore/author/Moonlight.pwd||' /home/moonlight/tizen-studio-data/profile/profiles.xml
+RUN sed -i 's|/home/moonlight/tizen-studio-data/tools/certificate-generator/certificates/distributor/tizen-distributor-signer.pwd|tizenpkcs12passfordsigner|' /home/moonlight/tizen-studio-data/profile/profiles.xml
+
+# Install Samsung Emscripten SDK (use the locally provided archive instead of wget)
+COPY --chown=moonlight emscripten-1.39.4.7-linux64.zip ./emscripten-1.39.4.7-linux64.zip
+RUN unzip emscripten-1.39.4.7-linux64.zip
+WORKDIR emscripten-release-bundle/emsdk
+RUN ./emsdk activate latest-fastcomp
+WORKDIR ../..
+
+# Pre-seed the emscripten Tizen ports cache with OpenSSL and cURL sources so
+# the build does not try to download them from dead upstream URLs at compile
+# time (openssl.org removed the old 1.1.1d tarball -> HTTP 404). fetch_project
+# skips the download whenever the tarball already exists at the expected cache
+# path (~/.emscripten_ports/<name>.tar.<ext>).
+COPY --chown=moonlight openssl-1.1.1d.tar.gz curl-7.68.0.tar.bz2 ./
+RUN mkdir -p /home/moonlight/.emscripten_ports \
+	&& cp openssl-1.1.1d.tar.gz /home/moonlight/.emscripten_ports/crypto.tar.gz \
+	&& cp openssl-1.1.1d.tar.gz /home/moonlight/.emscripten_ports/ssl.tar.gz \
+	&& cp curl-7.68.0.tar.bz2 /home/moonlight/.emscripten_ports/curl.tar.bz2
+
+# Pre-build the crypto/ssl/curl ports SERIALLY before any parallel ninja build.
+# Otherwise the first parallel compile jobs race to build the same port at once
+# and clobber each other's output dirs ("output file is in a directory that does
+# not exist"). A single emcc invocation builds each port once, safely. Build
+# both the non-pthreads and pthreads (-mt) library variants, since the project
+# uses both. Empty translation unit is enough to trigger the port build.
+RUN cd /home/moonlight \
+	&& EMCC=/home/moonlight/emscripten-release-bundle/emsdk/fastcomp/emscripten/emcc \
+	&& echo 'int main(void){return 0;}' > warm.c \
+	&& "$EMCC" -s USE_CRYPTO=1 -s USE_SSL=1 -s USE_CURL=1 -c warm.c -o warm_np.o \
+	&& "$EMCC" -s USE_CRYPTO=1 -s USE_SSL=1 -s USE_CURL=1 -s USE_PTHREADS=1 -c warm.c -o warm_p.o
