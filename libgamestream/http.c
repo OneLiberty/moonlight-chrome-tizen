@@ -76,6 +76,11 @@ int http_request(const char* url, const char* ppkstr, PHTTP_DATA data) {
   curl_easy_setopt(curl, CURLOPT_FRESH_CONNECT, 1L);
   curl_easy_setopt(curl, CURLOPT_FORBID_REUSE, 1L);
   curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 3L);
+  // Total request timeout. Without this a host that connects and then stalls
+  // (network drops after connect, host busy, half-open socket) would hang the
+  // request forever, leaving the UI stuck on a spinner. All these requests are
+  // small and quick on a LAN, so 15s is a safe upper bound.
+  curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
   curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
   curl_easy_setopt(curl, CURLOPT_SSL_ENABLE_ALPN, 0L);
   curl_easy_setopt(curl, CURLOPT_WRITEDATA, data);

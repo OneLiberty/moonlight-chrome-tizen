@@ -49,12 +49,18 @@ LoadResult MoonlightInstance::LoadCert(const char* certStr, const char* keyStr) 
 
   BIO* bio = BIO_new_mem_buf(_certStr, -1);
   if (!(g_Cert = PEM_read_bio_X509(bio, NULL, NULL, NULL))) {
+    BIO_free_all(bio);
+    free(_certStr);
+    free(_keyStr);
     return LoadResult::CertErr;
   }
   BIO_free_all(bio);
 
   bio = BIO_new_mem_buf(_keyStr, -1);
   if (!(g_PrivateKey = PEM_read_bio_PrivateKey(bio, NULL, NULL, NULL))) {
+    BIO_free_all(bio);
+    free(_certStr);
+    free(_keyStr);
     return LoadResult::PrivateKeyErr;
   }
   BIO_free_all(bio);
@@ -72,16 +78,7 @@ LoadResult MoonlightInstance::LoadCert(const char* certStr, const char* keyStr) 
 }
 
 MessageResult MoonlightInstance::HttpInit(std::string cert, std::string privateKey, std::string myUniqueId) {
-  LoadResult res = LoadResult::Success;
-  res = LoadCert(cert.c_str(), privateKey.c_str());
-  if (res == LoadResult::CertErr) {
-    return MessageResult::Reject(
-        emscripten::val(std::string("Error loading cert into memory")));
-  } else if (res == LoadResult::PrivateKeyErr) {
-    return MessageResult::Reject(
-        emscripten::val(std::string("Error loading private key into memory")));
-  }
-  res = LoadCert(cert.c_str(), privateKey.c_str());
+  LoadResult res = LoadCert(cert.c_str(), privateKey.c_str());
   if (res == LoadResult::CertErr) {
     return MessageResult::Reject(
         emscripten::val(std::string("Error loading cert into memory")));

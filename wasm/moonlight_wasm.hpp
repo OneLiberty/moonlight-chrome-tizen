@@ -1,4 +1,6 @@
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <memory>
 #include <queue>
 
@@ -171,6 +173,12 @@ public:
   };
 
   void WaitFor(std::condition_variable* variable, std::function<bool()> condition);
+  // Like WaitFor but gives up after `timeout`. Returns true if the condition
+  // was met, false if it timed out. Used to avoid hanging forever (black
+  // screen) when the TV media pipeline never reaches the expected state.
+  bool WaitForTimeout(std::condition_variable* variable,
+                      std::function<bool()> condition,
+                      std::chrono::milliseconds timeout);
 
   void OpenUrl_private(int callbackId, std::string url, std::string ppk, bool binaryResponse);
   void STUN_private(int callbackId);
