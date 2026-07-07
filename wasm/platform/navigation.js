@@ -108,6 +108,7 @@ const Views = {
   HostsNav: {
     view: new ListView(function () {
       return [
+        'selectProfile',
         'selectResolution',
         'selectFramerate',
         'bitrateField',
@@ -154,6 +155,23 @@ const Views = {
     down: function () { document.getElementById('continueDeleteHost').click() },
     accept: function () { document.getElementById(this.view.current()).click() },
     back: function () { document.getElementById('cancelDeleteHost').click() },
+    enter: function () { mark(this.view.current()) },
+    leave: function () { unmark(this.view.current()) },
+  },
+  SelectProfileMenu: {
+    isActive: function () { return isPopupActive('profileMenu') },
+    view: new ListView(function () {
+      return document
+        .getElementById('profileMenu')
+        .parentNode
+        .children[1]
+        .children[1]
+        .children
+    }),
+    up: function () { this.view.prev() },
+    down: function () { this.view.next() },
+    accept: function () { this.view.current().click() },
+    back: function () { document.getElementById('selectProfile').click() },
     enter: function () { mark(this.view.current()) },
     leave: function () { unmark(this.view.current()) },
   },

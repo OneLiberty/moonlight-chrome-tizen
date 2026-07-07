@@ -66,6 +66,20 @@
           </div>
 
           <div class="nav-menu-parent">
+            <div id="profileMenu">
+              <button id="selectProfile" data-value="manual" class="mdl-button mdl-js-button">Profile</button>
+            </div>
+
+            <ul class="profileMenu mdl-menu mdl-menu--bottom-right mdl-js-menu mdl-js-ripple-effect" for="selectProfile">
+              <li class="mdl-menu__item" data-value="cable">Wired (low latency)</li>
+              <li class="mdl-menu__item" data-value="wifi">Wi-Fi (stable)</li>
+              <li class="mdl-menu__item" data-value="manual">Manual</li>
+            </ul>
+
+            <div id="profileTooltip" class="mdl-tooltip" for="profileMenu">Connection profile</div>
+          </div>
+
+          <div class="nav-menu-parent">
             <div id="codecVideoMenu">
               <button id="selectCodecVideo" data-value=0x0001 class="mdl-button mdl-js-button">H264</button>
             </div>
